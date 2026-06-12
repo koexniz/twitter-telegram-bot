@@ -1,0 +1,21 @@
+# secrets
+.env
+*.env
+__pycache__/
+*.py[cod]
+
+# bot data - شخصی
+tracked_users.json
+filters.json
+*.db
+*.sqlite
+*.sqlite3
+
+# os
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# logs
+*.log
