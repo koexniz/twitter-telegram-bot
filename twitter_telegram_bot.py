@@ -1190,7 +1190,7 @@ def main() -> None:
     app.add_handler(CommandHandler("filter",    cmd_filter))
     app.add_handler(CommandHandler("keywords",  cmd_keywords))
     app.add_handler(CommandHandler("alert",     cmd_alert))
-    app.add_handler(CommandHandler("export",    cmd_export))
+    # app.add_handler(CommandHandler("export",    cmd_export))
     app.add_handler(CommandHandler("stats",     cmd_stats))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_callback))
