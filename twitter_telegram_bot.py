@@ -230,19 +230,26 @@ def translate_with_groq(text: str) -> Optional[str]:
     if not groq_client:
         return None
     try:
+        # پرامپت مهندسی‌شده و سخت‌گیرانه برای لحن عامیانه و کریپتویی
         prompt = (
-            "Translate the following English tweet to natural, colloquial Persian.\n"
-            "Rules:\n"
-            "- Keep @usernames, #hashtags, $tickers, URLs, emojis exactly as-is\n"
-            "- Keep crypto terms like airdrop, mainnet, listing, LFG, HODL, DeFi in English\n"
-            "- Be concise and natural, like a native Persian crypto Twitter user\n"
-            "- Output ONLY the Persian translation, no quotes, no explanations\n\n"
-            f"Text: {text}"
+            "You are an expert Persian crypto influencer and telegram admin.\n"
+            "Translate the following English tweet into smooth, concise, and colloquial (عامیانه/تهرانی) Persian, "
+            "exactly how it's written on Iranian crypto channels.\n\n"
+            
+            "STRICT RULES:\n"
+            "1. NEVER use formal/bookish Persian (like می باشد، است، کلمات کتابی). Use natural conversational tone (مثلا: داره، می‌شه، انجام بدین، برایِ).\n"
+            "2. DO NOT translate crypto tech terms. Leave these words EXACTLY in English: "
+            "Airdrop, Mainnet, Testnet, Mint, Stake, Staking, Claim, Snapshot, Node, Validator, Whitelist, Listing, "
+            "Wallet, Bridge, Swap, Presale, Launchpad, Gas, L1, L2, TVL, IDO, TGE, Hodl, FOMO, FUD.\n"
+            "3. Keep all @usernames, #hashtags, $tickers, and URLs exactly as they are in the original text.\n"
+            "4. Output ONLY the Persian translation. No explanations, no introduction, no quotes.\n\n"
+            f"Text to translate: {text}"
         )
         completion = groq_client.chat.completions.create(
             model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3, max_tokens=600,
+            temperature=0.2, # کاهش خلاقیت برای وفاداری بیشتر به متن
+            max_tokens=600,
         )
         return completion.choices[0].message.content.strip().strip('"\'\n ') or None
     except Exception as e:
