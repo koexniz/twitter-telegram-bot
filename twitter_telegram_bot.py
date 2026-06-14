@@ -661,9 +661,22 @@ async def send_tweet_entry(chat_id: Any, username: str, entry: Any, bot: Any) ->
 # Background checker
 # =============================
 async def auto_backup(app: Application) -> None:
-    await asyncio.sleep(30)
+    # یک بار لود اولیه متغیرهای خاموش/روشن بکاپ از محیط
+    # پشتیبانی از متغیرهای رایج فعال/غیرفعال‌سازی
+    enable_backup_env = os.getenv("ENABLE_BACKUP", "true").lower() in ("1", "true", "yes", "on")
+    auto_backup_env = os.getenv("AUTO_BACKUP", "true").lower() in ("1", "true", "yes", "on")
+    
+    # اگر هرکدام از متغیرها روی حالت False تنظیم شده باشند، سیستم بکاپ خودکار کلاً خاموش می‌شود
+    if not enable_backup_env or not auto_backup_env:
+        logger.info("Auto-backup is completely DISABLED via environment variables.")
+        return
+
+    # اولین مکس برای اینکه ربات موقع روشن شدن اولیه بلافاصله پیام نفرستد و چت را شلوغ نکند
+    await asyncio.sleep(60)
+    
     while True:
         try:
+            # ذخیره کردن وضعیت ددپ در فایل
             _flush_dedup_to_file()
             logger.info("Dedup database auto-flushed to file.")
             
@@ -678,6 +691,7 @@ async def auto_backup(app: Application) -> None:
                     FILTERS_FILE:  "filters.json",
                     SENT_IDS_FILE: "sent_ids.json",
                 }
+                
                 # ارسال فایل‌های بکاپ تفکیک شده به تک‌تک ادمین‌های ست شده
                 for aid in ADMIN_IDS:
                     for path, caption in caption_map.items():
@@ -695,77 +709,10 @@ async def auto_backup(app: Application) -> None:
                 logger.info(f"Auto-backup sent to all admins: {', '.join(ADMIN_IDS)}")
         except Exception as e:
             logger.error(f"Auto-backup error: {e}")
-        await asyncio.sleep(min(BACKUP_INTERVAL, 300))
-
-async def check_twitter_updates(app: Application) -> None:
-    while True:
-        if not tracked:
-            await asyncio.sleep(CHECK_INTERVAL)
-            continue
-
-        for username, info in list(tracked.items()):
-            try:
-                feed = await fetch_rss_feed(username)
-                if not feed or not feed.entries:
-                    await asyncio.sleep(1.5)
-                    continue
-
-                last_id       = str(info.get("last_id", ""))
-                new_entries   = []
-                found_last_id = False
-
-                for entry in feed.entries:
-                    tid = extract_tweet_id(entry)
-                    if last_id and tid == last_id:
-                        found_last_id = True
-                        break
-                    new_entries.append(entry)
-
-                if last_id and not found_last_id:
-                    chats_of_user = list(info.get("chats", []))
-                    truly_new = []
-                    for e in new_entries:
-                        tid = extract_tweet_id(e)
-                        if not any(is_already_sent(c, tid) for c in chats_of_user):
-                            truly_new.append(e)
-                    
-                    if len(truly_new) > MAX_BACKFILL_ON_MISSING_LAST_ID:
-                        truly_new = truly_new[:MAX_BACKFILL_ON_MISSING_LAST_ID]
-                    new_entries = truly_new
-
-                if not new_entries:
-                    await asyncio.sleep(1.5)
-                    continue
-
-                processed_ids: List[str] = []
-
-                for entry in reversed(new_entries):
-                    tid = extract_tweet_id(entry)
-                    if not tid:
-                        continue
-
-                    for chat_id in list(info.get("chats", [])):
-                        if is_already_sent(chat_id, tid):
-                            continue
-                        try:
-                            await send_tweet_entry(chat_id, username, entry, app.bot)
-                        except Exception as e:
-                            logger.error(f"send_tweet_entry error {username}/{tid}: {e}")
-                        await asyncio.sleep(0.3)
-
-                    processed_ids.append(tid)
-
-                if processed_ids and username in tracked:
-                    tracked[username]["last_id"] = str(processed_ids[-1])
-                    save_tracked()
-                    logger.info(f"[{username}] last_id → {processed_ids[-1]} ({len(processed_ids)} processed)")
-
-                await asyncio.sleep(1.5)
-
-            except Exception as e:
-                logger.error(f"Check failed for {username}: {e}")
-
-        await asyncio.sleep(CHECK_INTERVAL)
+            
+        # اصلاح فاحش: حالا ربات دقیقاً به اندازه BACKUP_INTERVAL ثانیه‌ای که ست کرده‌ای صبر می‌کند.
+        # اگر در ریلوای متغیری نباشد، به طور پیش‌فرض هر ۲۱۶۰۰ ثانیه (۶ ساعت) انجام می‌شود.
+        await asyncio.sleep(BACKUP_INTERVAL)
 
 # =============================
 # Commands & Admin Verification
