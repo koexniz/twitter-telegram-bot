@@ -29,7 +29,6 @@ ADMIN_IDS = [x.strip() for x in os.getenv("ADMIN_CHAT_ID", "").split(",") if x.s
 DATA_FILE = os.path.join(DATA_DIR, "tracked_users.json")
 FILTERS_FILE = os.path.join(DATA_DIR, "filters.json")
 SENT_IDS_FILE = os.path.join(DATA_DIR, "sent_ids.json")
-
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "90"))
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "10"))
 MAX_BACKFILL_ON_MISSING_LAST_ID = int(os.getenv("MAX_BACKFILL_ON_MISSING_LAST_ID", "5"))
@@ -40,13 +39,11 @@ DEDUP_FILE_MAX_PER_KEY = int(os.getenv("DEDUP_FILE_MAX_PER_KEY", "500"))
 FOLD_THRESHOLD = int(os.getenv("FOLD_THRESHOLD", "280"))
 BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL", "21600"))
 
-# سورس‌های سالم و پرسرعت (بدون nitter.net که قطع است)
 RSS_SOURCES = [
-    "https://xcancel.com/{username}/rss",
-    "https://nitter.poast.org/{username}/rss",
+    "https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}",
+    "https://rsshub.app/twitter/user/{username}",
     "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.freedit.eu/{username}/rss",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rss.app/feeds/twitter/{username}.xml",
 ]
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
@@ -244,12 +241,21 @@ def remove_chat_from_username(chat_id: Any, username: str) -> bool:
 async def fetch_single_source(client: httpx.AsyncClient, template: str, username: str) -> Optional[Any]:
     url = template.format(username=username)
     try:
-        res = await client.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+        res = await client.get(
+            url, 
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            }, 
+            follow_redirects=True
+        )
+        
+        # اگر پاسخ سالم بود (کد 200)
         if res.status_code == 200 and res.content:
             feed = feedparser.parse(res.content)
             if feed and hasattr(feed, 'entries') and feed.entries:
                 first_title = (feed.entries[0].get("title", "") or "").lower()
-                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "404 not found")):
+                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "404 not found", "error", "blocked")):
                     return feed
     except Exception:
         pass
