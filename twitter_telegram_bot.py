@@ -407,22 +407,33 @@ def remove_chat_from_username(chat_id: Any, username: str) -> bool:
 # =============================
 # RSS / Tweet Parsing Helpers
 # =============================
+RSS_SOURCES = [
+    "https://xcancel.com/{username}/rss",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.net/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
+]
+
 def get_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
     if not valid_username(username):
         return None
+        
+    # امتحان کردن سورس‌ها با وقفه کوتاه
     for template in RSS_SOURCES:
         url = template.format(username=username)
         try:
             feed = feedparser.parse(url, agent=USER_AGENT)
-            if not feed.entries:
-                continue
-            first_title = (feed.entries[0].get("title", "") or "").lower()
-            if any(x in first_title for x in ("whitelist", "rss reader", "not yet")):
-                continue
-            return feed
+            if feed and hasattr(feed, 'entries') and feed.entries:
+                first_title = (feed.entries[0].get("title", "") or "").lower()
+                # بررسی اینکه ایا فید خروجی معتبر داده یا صفحه ارور RSS reader است
+                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "blocked", "404 not found")):
+                    return feed
         except Exception as e:
-            logger.warning(f"Failed RSS source {url}: {e}")
+            logger.debug(f"Failed RSS source {url} for {username}: {e}")
+            continue
+            
     return None
 
 async def fetch_rss_feed(username: str) -> Optional[Any]:
@@ -991,7 +1002,7 @@ def _extract_usernames(text: str) -> List[str]:
 async def _import_accounts_batch(
     chat_id: Any, usernames: List[str], status_msg
 ) -> Tuple[List[str], List[str], List[str]]:
-    """Fetch last_id for each account concurrently and add them."""
+    """Fetch last_id for each account concurrently and add them safely."""
     seen: Set[str] = set()
     clean_list: List[str] = []
     for u in usernames:
@@ -1003,6 +1014,7 @@ async def _import_accounts_batch(
     to_fetch: List[str] = []
     skipped: List[str] = []
     failed: List[str] = []
+    
     for username in clean_list:
         if not valid_username(username):
             failed.append(username)
@@ -1012,7 +1024,7 @@ async def _import_accounts_batch(
             to_fetch.append(username)
 
     added: List[str] = []
-    BATCH = 8
+    BATCH = 5 # کاهش تعداد درخواست‌های همزمان برای جلوگیری از Block شدن آی‌پای
     total = len(to_fetch)
 
     for start in range(0, total, BATCH):
@@ -1020,25 +1032,27 @@ async def _import_accounts_batch(
         feeds = await asyncio.gather(
             *[fetch_rss_feed(u) for u in batch], return_exceptions=True
         )
+        
         for username, feed in zip(batch, feeds):
             try:
-                if isinstance(feed, Exception) or not feed or not feed.entries:
-                    # feed not available now; add anyway, bot handles it later
-                    add_chat_to_username(chat_id, username, "")
-                    added.append(username)
-                else:
+                # اگر فید دریافت شد، آخرین آی‌دی توئیت رو برمیداریم
+                if feed and not isinstance(feed, Exception) and hasattr(feed, 'entries') and feed.entries:
                     last_id = extract_tweet_id(feed.entries[0])
                     add_chat_to_username(chat_id, username, last_id)
-                    added.append(username)
+                else:
+                    # حتی اگه سرور Nitter موقتا قطعی داد، اکانت رو اضافه میکنیم تا در Background Task چک بشه
+                    add_chat_to_username(chat_id, username, "")
+                    
+                added.append(username)
             except Exception as e:
-                logger.warning(f"import failed for {username}: {e}")
+                logger.warning(f"Import error for {username}: {e}")
                 failed.append(username)
 
         done = min(start + BATCH, total)
         try:
             await status_msg.edit_text(
-                f"Importing... {done}/{total} processed "
-                f"({len(added)} added, {len(skipped)} existing, {len(failed)} failed)"
+                f"⏳ در حال افزودن... {done}/{total}\n"
+                f"✅ موفق: {len(added)} | 🔄 تکراری: {len(skipped)} | ❌ نامعتبر: {len(failed)}"
             )
         except Exception:
             pass
@@ -1047,7 +1061,6 @@ async def _import_accounts_batch(
         save_tracked()
 
     return added, skipped, failed
-
 
 def _build_import_report(added: List[str], skipped: List[str], failed: List[str]) -> str:
     parts: List[str] = []
