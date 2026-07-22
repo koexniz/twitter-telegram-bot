@@ -43,11 +43,11 @@ BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL", "21600"))  # default every 6 
 
 RSS_HUB_URL = os.getenv("RSS_HUB_URL", "https://rsshub.app").rstrip("/")
 RSS_SOURCES = [
-    RSS_HUB_URL + "/twitter/user/{username}",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://xcancel.com/{username}/rss",
     "https://nitter.poast.org/{username}/rss",
-    "https://nitter.net/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://nitter.freedit.eu/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
 ]
 
 USER_AGENT = (
@@ -430,21 +430,30 @@ async def fetch_single_source(client: httpx.AsyncClient, template: str, username
         pass
     return None
 
-async def fetch_rss_feed(username: str) -> Optional[Any]:
-    """ارسال هم‌زمان درخواست به تمام سورس‌ها و برداشتن سریع‌ترین پاسخ"""
+import urllib.request
+
+def get_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
     if not valid_username(username):
         return None
 
-    # استفاده از httpx برای درخواست‌های غیرهم‌زمان و پرسرعت
-    async with httpx.AsyncClient(timeout=6.0) as client:
-        tasks = [fetch_single_source(client, template, username) for template in RSS_SOURCES]
-        
-        # as_completed باعث میشه به محض اینکه اولین سورس جواب داد، بقیه ول بشن
-        for task in asyncio.as_completed(tasks):
-            feed = await task
-            if feed:
-                return feed
+    for template in RSS_SOURCES:
+        url = template.format(username=username)
+        try:
+            # ایجاد درخواست با تایم‌اوت سخت‌گیرانه ۳ ثانیه‌ای برای عدم معطلی
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=3.5) as response:
+                if response.status == 200:
+                    content = response.read()
+                    feed = feedparser.parse(content)
+                    if feed and hasattr(feed, 'entries') and feed.entries:
+                        first_title = (feed.entries[0].get("title", "") or "").lower()
+                        if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "blocked", "404 not found")):
+                            return feed
+        except Exception:
+            # اگر این سورس ارور داد یا کند بود، فوراً میره سورس بعدی
+            continue
+            
     return None
 
 async def fetch_rss_feed(username: str) -> Optional[Any]:
