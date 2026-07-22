@@ -1217,13 +1217,20 @@ async def check_twitter_updates(app: Application) -> None:
             await asyncio.sleep(CHECK_INTERVAL)
             continue
 
-        for username, info in list(tracked.items()):
-            try:
-                feed = await fetch_rss_feed(username)
-                if not feed or not feed.entries:
-                    await asyncio.sleep(1.5)
+        usernames = list(tracked.keys())
+        BATCH_SIZE = 8  # بررسی همزمان ۸ اکانت با هم
+
+        for i in range(0, len(usernames), BATCH_SIZE):
+            batch = usernames[i:i + BATCH_SIZE]
+            
+            # دریافت هم‌زمان فید برای ۸ اکانت
+            feeds = await asyncio.gather(*[fetch_rss_feed(u) for u in batch], return_exceptions=True)
+
+            for username, feed in zip(batch, feeds):
+                if isinstance(feed, Exception) or not feed or not feed.entries:
                     continue
 
+                info = tracked.get(username, {})
                 last_id = str(info.get("last_id", ""))
                 new_entries = []
                 found_last_id = False
@@ -1237,47 +1244,33 @@ async def check_twitter_updates(app: Application) -> None:
 
                 if not found_last_id:
                     chats_of_user = list(info.get("chats", []))
-                    truly_new = []
-                    for e in new_entries:
-                        tid = extract_tweet_id(e)
-                        if not any(is_already_sent(c, tid) for c in chats_of_user):
-                            truly_new.append(e)
-
-                    if len(truly_new) > MAX_BACKFILL_ON_MISSING_LAST_ID:
-                        truly_new = truly_new[:MAX_BACKFILL_ON_MISSING_LAST_ID]
-                    new_entries = truly_new
+                    truly_new = [e for e in new_entries if not any(is_already_sent(c, extract_tweet_id(e)) for c in chats_of_user)]
+                    new_entries = truly_new[:MAX_BACKFILL_ON_MISSING_LAST_ID]
 
                 if not new_entries:
-                    await asyncio.sleep(1.5)
                     continue
 
-                processed_ids: List[str] = []
-
+                processed_ids = []
                 for entry in reversed(new_entries):
                     tid = extract_tweet_id(entry)
                     if not tid:
                         continue
 
                     for chat_id in list(info.get("chats", [])):
-                        if is_already_sent(chat_id, tid):
-                            continue
-                        try:
-                            await send_tweet_entry(chat_id, username, entry, app.bot)
-                        except Exception as e:
-                            logger.error(f"send_tweet_entry error {username}/{tid}: {e}")
-                        await asyncio.sleep(0.3)
+                        if not is_already_sent(chat_id, tid):
+                            try:
+                                await send_tweet_entry(chat_id, username, entry, app.bot)
+                            except Exception as e:
+                                logger.error(f"send_tweet_entry error {username}/{tid}: {e}")
+                            await asyncio.sleep(0.2)
 
                     processed_ids.append(tid)
 
                 if processed_ids and username in tracked:
                     tracked[username]["last_id"] = str(processed_ids[-1])
                     save_tracked()
-                    logger.info(f"[{username}] last_id -> {processed_ids[-1]} ({len(processed_ids)} processed)")
 
-                await asyncio.sleep(1.5)
-
-            except Exception as e:
-                logger.error(f"Check failed for {username}: {e}")
+            await asyncio.sleep(1) # وقفه کوتاه بین هر دسته
 
         await asyncio.sleep(CHECK_INTERVAL)
 
