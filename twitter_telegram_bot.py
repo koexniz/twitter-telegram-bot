@@ -649,10 +649,13 @@ async def send_tweet_entry(chat_id: Any, username: str, entry: Any, bot: Any) ->
 
     try:
         sent_msg = await bot.send_message(
-            chat_id=chat_id, text=text, parse_mode=ParseMode.HTML,
-            disable_web_page_preview=False, reply_markup=reply_markup,
-            disable_notification=disable_notif,
-        )
+    chat_id=chat_id, 
+    text=text, 
+    parse_mode=ParseMode.HTML, # 👈 حتما HTML باشه
+    disable_web_page_preview=False, 
+    reply_markup=reply_markup,
+    disable_notification=disable_notif,
+)
     except Exception as e:
         logger.error(f"Send failed: {e}")
         return False, "error"
