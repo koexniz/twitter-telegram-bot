@@ -579,33 +579,48 @@ _EMOJI_MAP = {
 }
 
 def build_tweet_message(username: str, title: str, fa_text: Optional[str], is_alert: bool, image_url: Optional[str] = None) -> str:
-    emoji = "🚨" if is_alert else pick_emoji(title)
-    hidden_img = f' [​]({image_url})' if image_url else ""
+    # ایموجی برای بالای پیام
+    header_emoji = "🚨" if is_alert else "📣"
+    
+    # لود کردن عکس مخفی (برای نمایش پیش‌نمایش تصویر بالای کارت)
+    hidden_img = f'<a href="{image_url}">&#8203;</a>' if image_url else ""
 
+    # هدر اصلی
     if is_alert:
-        header = f"{hidden_img}🚨 **ALERT** 🚨\n{emoji} **@{html.escape(username)}**"
+        header = f"{hidden_img}🚨 <b>ALERT</b> 🚨\n👤 <b>منبع:</b> <code>@{html.escape(username)}</code>"
     else:
-        header = f"{hidden_img}{emoji} **@{html.escape(username)}**"
+        header = f"{hidden_img}{header_emoji} <b>پست جدید از دنیای کریپتو!</b>\n\n👤 <b>منبع:</b> <code>@{html.escape(username)}</code>"
 
+    # آماده‌سازی متن اصلی انگلیسی
     body_raw = trim_raw(title, 2200)
+    body_linkified = escape_and_linkify(body_raw)
+    
+    # تفکیک‌کننده شیک
+    separator = "➖➖➖➖➖➖➖➖➖➖"
 
-    if len(body_raw) > FOLD_THRESHOLD:
-        body = f"\n\n> {escape_and_linkify(body_raw)}\n\n"
-    else:
-        body = escape_and_linkify(body_raw)
+    # ساخت بدنه پیام
+    text = (
+        f"{header}\n\n"
+        f"{separator}\n\n"
+        f"📝 <b>متن اصلی (انگلیسی):</b>\n\n"
+        f"<blockquote>{body_linkified}</blockquote>"
+    )
 
-    text = f"{header}\n\n{body}"
-
+    # اگر ترجمه فارسی وجود داشته باشه
     if fa_text and fa_text.strip() != title.strip():
         fa_raw = trim_raw(fa_text, 1200)
-        if len(fa_raw) > FOLD_THRESHOLD:
-            fa_block = f"\n\n> {html.escape(fa_raw)}\n\n"
-        else:
-            fa_block = html.escape(fa_raw)
-        text += f"\n\n**Translation:**\n{fa_block}"
+        fa_escaped = html.escape(fa_raw)
+        
+        text += (
+            f"\n\n{separator}\n\n"
+            f"🇮🇷 <b>ترجمه فارسی:</b>\n\n"
+            f"<blockquote>{fa_escaped}</blockquote>"
+        )
 
+    # کنترل حداکثر طول پیام تلگرام
     if len(text) > 4096:
         text = text[:4000].rstrip() + "\n…"
+        
     return text
 
 async def send_tweet_entry(chat_id: Any, username: str, entry: Any, bot: Any) -> Tuple[bool, str]:
