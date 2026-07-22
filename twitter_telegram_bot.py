@@ -410,30 +410,41 @@ def remove_chat_from_username(chat_id: Any, username: str) -> bool:
 RSS_SOURCES = [
     "https://xcancel.com/{username}/rss",
     "https://nitter.poast.org/{username}/rss",
-    "https://nitter.net/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://nitter.freedit.eu/{username}/rss",
     "https://rsshub.rssforever.com/twitter/user/{username}",
-    "https://rsshub.app/twitter/user/{username}",
 ]
 
-def get_rss_feed(username: str) -> Optional[Any]:
+async def fetch_single_source(client: httpx.AsyncClient, template: str, username: str) -> Optional[Any]:
+    """دریافت سریع یک سورس مشخص به صورت ای‌سنک"""
+    url = template.format(username=username)
+    try:
+        response = await client.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+        if response.status_code == 200:
+            feed = feedparser.parse(response.content)
+            if feed and hasattr(feed, 'entries') and feed.entries:
+                first_title = (feed.entries[0].get("title", "") or "").lower()
+                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "blocked", "404 not found")):
+                    return feed
+    except Exception:
+        pass
+    return None
+
+async def fetch_rss_feed(username: str) -> Optional[Any]:
+    """ارسال هم‌زمان درخواست به تمام سورس‌ها و برداشتن سریع‌ترین پاسخ"""
     username = clean_username(username)
     if not valid_username(username):
         return None
+
+    # استفاده از httpx برای درخواست‌های غیرهم‌زمان و پرسرعت
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        tasks = [fetch_single_source(client, template, username) for template in RSS_SOURCES]
         
-    # امتحان کردن سورس‌ها با وقفه کوتاه
-    for template in RSS_SOURCES:
-        url = template.format(username=username)
-        try:
-            feed = feedparser.parse(url, agent=USER_AGENT)
-            if feed and hasattr(feed, 'entries') and feed.entries:
-                first_title = (feed.entries[0].get("title", "") or "").lower()
-                # بررسی اینکه ایا فید خروجی معتبر داده یا صفحه ارور RSS reader است
-                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "blocked", "404 not found")):
-                    return feed
-        except Exception as e:
-            logger.debug(f"Failed RSS source {url} for {username}: {e}")
-            continue
-            
+        # as_completed باعث میشه به محض اینکه اولین سورس جواب داد، بقیه ول بشن
+        for task in asyncio.as_completed(tasks):
+            feed = await task
+            if feed:
+                return feed
     return None
 
 async def fetch_rss_feed(username: str) -> Optional[Any]:
