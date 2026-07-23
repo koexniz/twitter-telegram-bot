@@ -268,27 +268,22 @@ from typing import Optional, Any
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "cbf5caed10msh6eef77ac9dc816fp12095bjsnfd641f9fe9c0")
 
-# لیست سرویس‌های مختلفی که داری (برای Rotation)
 RAPID_ENDPOINTS = [
     {
         "host": "twitter32.p.rapidapi.com",
-        "url": "https://twitter32.p.rapidapi.com/getUserByScreenName?screen_name={username}",
-        "type": "twitter32"
+        "url": "https://twitter32.p.rapidapi.com/getUserByScreenName?screen_name={username}"
     },
     {
         "host": "twitter-v23.p.rapidapi.com",
-        "url": "https://twitter-v23.p.rapidapi.com/v2/UserByScreenName/?username={username}",
-        "type": "v23"
+        "url": "https://twitter-v23.p.rapidapi.com/v2/UserByScreenName/?username={username}"
     },
     {
         "host": "x-com2.p.rapidapi.com",
-        "url": "https://x-com2.p.rapidapi.com/UserByScreenName/?username={username}",
-        "type": "xcom2"
+        "url": "https://x-com2.p.rapidapi.com/UserByScreenName/?username={username}"
     },
     {
         "host": "twitter-v24.p.rapidapi.com",
-        "url": "https://twitter-v24.p.rapidapi.com/user/about?username={username}",
-        "type": "v24"
+        "url": "https://twitter-v24.p.rapidapi.com/user/about?username={username}"
     }
 ]
 
@@ -298,7 +293,6 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
         return None
 
     async with httpx.AsyncClient(timeout=8.0) as client:
-        # تست یکی‌یکی APIها تا زمانی که یکی پاسخ ۲٠٠ بده
         for ep in RAPID_ENDPOINTS:
             headers = {
                 "x-rapidapi-host": ep["host"],
@@ -309,17 +303,13 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
 
             try:
                 res = await client.get(url, headers=headers)
-                
-                # اگر درخواست موفق بود و ۴۲۹ یا ارور نداشت
                 if res.status_code == 200:
                     data = res.json()
                     entries = []
 
-                    # استخراج توئیت‌ها بر اساس نوع API
-                    # ۱. ساختار عمومی Twitter32 / UserByScreenName
                     user_data = data.get("data", {}).get("user", {}).get("result", {}) or data
                     timeline = user_data.get("timeline", {}) or user_data.get("tweets", [])
-                    
+
                     if isinstance(timeline, dict):
                         instructions = timeline.get("instructions", [])
                         for item in instructions:
@@ -354,9 +344,7 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
                         f = DummyFeed()
                         f.entries = entries
                         return f
-
             except Exception:
-                # اگر این سرویس ارور داد یا ۴۲۹ شد، بره سراغ API بعدی
                 continue
 
     return None
