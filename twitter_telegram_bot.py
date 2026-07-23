@@ -25,11 +25,12 @@ db = Database()
 
 RSS_SOURCES = [
     "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.poast.org/{username}/rss",
-    "https://nitter.moomoo.me/{username}/rss",
+    "https://nitter.net/{username}/rss",
+    "https://nitter.perennialte.ch/{username}/rss",
     "https://nitter.no-logs.com/{username}/rss",
-    "https://nitter.projectsegfau.lt/{username}/rss",
-    "https://xcancel.com/{username}/rss"
+    "https://nitter.ca/{username}/rss",
+    "https://nitter.rawbit.ninja/{username}/rss",
+    "https://rsshub.app/twitter/user/{username}"
 ]
 
 # --- Helpers ---
@@ -50,17 +51,25 @@ def extract_id(entry):
     m = re.search(r"(\d{15,})", guid)
     return m.group(1) if m else None
 
+import random # این را بالای فایل اضافه کن
+
 async def fetch_feed(username, semaphore):
-    """تابع اصلی واکشی RSS از سورس‌های مختلف"""
     async with semaphore:
+        # یک تاخیر تصادفی بین 1 تا 3 ثانیه قبل از هر درخواست برای دور زدن فیلتر
+        await asyncio.sleep(random.uniform(1, 3))
+        
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=7) as client:
+                # اضافه کردن User-Agent مرورگر برای فریب دادن سورس
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+                async with httpx.AsyncClient(timeout=10, headers=headers) as client:
                     resp = await client.get(url, follow_redirects=True)
                     if resp.status_code == 200:
                         feed = feedparser.parse(resp.text)
-                        if feed.entries: return feed.entries
+                        if feed.entries: 
+                            logger.info(f"✅ Success: @{username} from {url}")
+                            return feed.entries
             except Exception:
                 continue
         return []
