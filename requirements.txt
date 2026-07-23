@@ -1,5 +1,6 @@
 python-telegram-bot[job-queue]>=20.0
 httpx
 feedparser
-python-dotenv
 psycopg2-binary
+deep-translator
+python-dotenv
