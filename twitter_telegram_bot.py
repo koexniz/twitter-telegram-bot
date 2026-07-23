@@ -140,8 +140,15 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    my_users = [f"@{html.escape(u)}" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
-    await update.message.reply_text("📋 <b>لیست شما:</b>\n\n" + ("\n".join(my_users) if my_users else "خالی"), parse_mode=ParseMode.HTML)
+    my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
+    
+    if not my_users:
+        await update.message.reply_text("📋 <b>لیست مانیتورینگ شما خالی است.</b>", parse_mode=ParseMode.HTML)
+    else:
+        # نمایش تعداد اکانت‌ها در سربرگ
+        msg = f"📋 <b>تعداد {len(my_users)} اکانت در لیست شما:</b>\n\n"
+        msg += "\n".join(my_users)
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -182,24 +189,54 @@ async def process_user(username, last_id, sem, bot):
     if not entries: return
     
     new_last_id = last_id
-    for entry in reversed(entries[:3]): # فقط 3 توییت آخر برای جلوگیری از اسپام
+    for entry in reversed(entries[:3]): 
         tid = extract_id(entry)
         if not tid or tid == last_id: continue
         
         title = entry.get("title", "")
         translation = await translate_text(title)
         
-        for cid in db.get_subs_for_user(username):
+        cids = db.get_subs_for_user(username)
+        for cid in cids:
             if not db.is_duplicate(cid, tid):
                 try:
-                    text = f"🐦 <b>@{html.escape(username)}</b>\n\n{html.escape(title)}"
-                    if translation:
-                        text += f"\n\n🇮🇷 <b>ترجمه:</b>\n<i>{html.escape(translation)}</i>"
+                    safe_name = html.escape(username)
+                    safe_title = html.escape(title)
                     
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("مشاهده توییت", url=entry.get('link'))]])
-                    await bot.send_message(chat_id=cid, text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                    # --- طراحی جدید و چشم‌نواز ---
+                    # سربرگ با استایل حرفه‌ای
+                    header = f"👤 <b>@{safe_name}</b>"
+                    
+                    # بدنه اصلی توییت (اگر طولانی باشد در بلوک قرار می‌گیرد)
+                    if len(title) > 120:
+                        body = f"<blockquote>{safe_title}</blockquote>"
+                    else:
+                        body = f"\n<b>{safe_title}</b>"
+                    
+                    text = f"{header}\n{body}"
+
+                    # بخش ترجمه با ظاهری متمایز
+                    if translation:
+                        # استفاده از یک خط جداکننده ظریف
+                        divider = "\n" + "⎯" * 15 + "\n"
+                        text += f"{divider}🇮🇷 <b>ترجمه اختصاصی:</b>\n"
+                        text += f"<blockquote><i>{html.escape(translation)}</i></blockquote>"
+                    
+                    # دکمه شیشه‌ای با متن بهتر
+                    kb = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔗 مشاهده توییت اصلی", url=entry.get('link'))
+                    ]])
+                    
+                    await bot.send_message(
+                        chat_id=cid, 
+                        text=text, 
+                        reply_markup=kb, 
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=False # نمایش پیش‌نمایش عکس توییت
+                    )
                     db.mark_sent(cid, tid)
-                except: pass
+                except Exception as e:
+                    logger.error(f"Send error for {username}: {e}")
         new_last_id = tid
     
     if new_last_id != last_id:
