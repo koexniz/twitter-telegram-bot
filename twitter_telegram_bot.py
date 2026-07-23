@@ -44,7 +44,12 @@ RSS_SOURCES = [
     "https://nitter.no-name-given.com/{username}/rss",
     "https://nitter.freedit.eu/{username}/rss",
 ]
-
+NITTER_DOMAINS = [
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+    "https://nitter.no-name-given.com",
+    "https://nitter.hu",
+]
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 
 socket.setdefaulttimeout(HTTP_TIMEOUT)
@@ -262,13 +267,35 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
     if not valid_username(username):
         return None
 
-    # ارسال هم‌زمان درخواست به تمام سورس‌ها
-    async with httpx.AsyncClient(timeout=4.0) as client:
-        tasks = [fetch_single_source(client, template, username) for template in RSS_SOURCES]
-        for task in asyncio.as_completed(tasks):
-            feed = await task
-            if feed:
-                return feed
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*"
+    }
+
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        for domain in NITTER_DOMAINS:
+            url = f"{domain}/{username}/rss"
+            try:
+                res = await client.get(url, headers=headers, follow_redirects=True)
+                if res.status_code == 200 and res.content:
+                    feed = feedparser.parse(res.content)
+                    if feed and hasattr(feed, 'entries') and feed.entries:
+                        return feed
+            except Exception:
+                continue
+
+    # اگر تمام دامنه‌های Nitter مسدود بودند، استفاده از RSSHub به عنوان پشتیبان آخر
+    try:
+        fallback_url = f"https://rsshub.app/twitter/user/{username}"
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            res = await client.get(fallback_url, headers=headers, follow_redirects=True)
+            if res.status_code == 200 and res.content:
+                feed = feedparser.parse(res.content)
+                if feed and hasattr(feed, 'entries') and feed.entries:
+                    return feed
+    except Exception:
+        pass
+
     return None
 
 def extract_tweet_id(entry: Any) -> str:
