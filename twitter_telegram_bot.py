@@ -40,10 +40,11 @@ FOLD_THRESHOLD = int(os.getenv("FOLD_THRESHOLD", "280"))
 BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL", "21600"))
 
 RSS_SOURCES = [
-    "https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}",
-    "https://rsshub.app/twitter/user/{username}",
     "https://nitter.privacydev.net/{username}/rss",
-    "https://rss.app/feeds/twitter/{username}.xml",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.hu/{username}/rss",
+    "https://nitter.catsarch.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
 ]
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
@@ -387,14 +388,14 @@ async def check_twitter_updates(app: Application) -> None:
     while True:
         if tracked:
             usernames = list(tracked.keys())
-            BATCH_SIZE = 6
+            BATCH_SIZE = 3  # بررسی دسته‌های ۳ تایی برای جلوگیری از Rate Limit
 
             for i in range(0, len(usernames), BATCH_SIZE):
                 batch = usernames[i:i + BATCH_SIZE]
                 feeds = await asyncio.gather(*[fetch_rss_feed(u) for u in batch], return_exceptions=True)
 
                 for username, feed in zip(batch, feeds):
-                    if isinstance(feed, Exception) or not feed or not feed.entries:
+                    if isinstance(feed, Exception) or not feed or not hasattr(feed, 'entries') or not feed.entries:
                         continue
 
                     info = tracked.get(username, {})
@@ -419,7 +420,8 @@ async def check_twitter_updates(app: Application) -> None:
                             tracked[username]["last_id"] = latest_tid
                             save_tracked()
 
-                await asyncio.sleep(0.5)
+                # وقفه ۲ ثانیه‌ای بین هر دسته ۳ تایی برای عدم لیمیت آی‌پی
+                await asyncio.sleep(2.0)
 
         await asyncio.sleep(CHECK_INTERVAL)
 
