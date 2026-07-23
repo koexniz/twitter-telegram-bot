@@ -24,11 +24,12 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 RSS_SOURCES = [
-    "https://nitter.net/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.moomoo.me/{username}/rss",
     "https://nitter.no-logs.com/{username}/rss",
-    "https://nitter.perennialte.ch/{username}/rss",
-    "https://rsshub.app/twitter/user/{username}"
+    "https://nitter.projectsegfau.lt/{username}/rss",
+    "https://xcancel.com/{username}/rss"
 ]
 
 # --- Helpers ---
@@ -81,7 +82,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
     chat_id = str(update.effective_chat.id)
     
-    wait = await update.message.reply_text(f"⏳ در حال استعلام موازی {len(usernames)} اکانت...")
+    wait = await update.message.reply_text(f"⏳ در حال بررسی {len(usernames)} اکانت...")
     
     to_fetch, skipped, failed = [], [], []
     for u in usernames:
@@ -94,17 +95,23 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = await asyncio.gather(*tasks)
     
     added = []
+    added_with_warning = [] # اکانت‌هایی که اد شدند ولی سورس‌شان قطع بود
+
     for username, entries in results:
         if entries:
             last_id = extract_id(entries[0])
             db.add_subscription(chat_id, username, last_id)
             added.append(f"@{username}")
-        else: failed.append(username)
+        else:
+            # اگر سورس قطع بود، باز هم اد کن (Force Add)
+            db.add_subscription(chat_id, username, "")
+            added_with_warning.append(f"@{username}")
 
     res = "✅ <b>گزارش نهایی:</b>\n\n"
-    if added: res += f"🔹 اضافه شد ({len(added)}): <code>{', '.join(added)}</code>\n"
-    if skipped: res += f"🔸 قبلاً بود ({len(skipped)}): <code>{', '.join(skipped)}</code>\n"
-    if failed: res += f"❌ ناموفق ({len(failed)}): <code>{', '.join(failed)}</code>"
+    if added: res += f"🔹 با موفقیت اضافه شد: <code>{', '.join(added)}</code>\n"
+    if added_with_warning: res += f"⚠️ اضافه شد (سورس قطع است): <code>{', '.join(added_with_warning)}</code>\n"
+    if skipped: res += f"🔸 قبلاً بود: <code>{', '.join(skipped)}</code>\n"
+    if failed: res += f"❌ نامعتبر: <code>{', '.join(failed)}</code>"
     
     await wait.edit_text(res, parse_mode=ParseMode.HTML)
 
