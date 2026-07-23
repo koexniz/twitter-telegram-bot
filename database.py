@@ -4,18 +4,16 @@ import time
 
 class Database:
     def __init__(self):
-        # تلاش برای خواندن DATABASE_URL و اگر نبود DATABASE_PUBLIC_URL
+        # ریلیوی DATABASE_URL یا DATABASE_PUBLIC_URL را خودکار ست می‌کند
         self.db_url = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL")
         
         if not self.db_url:
-            print("❌ CRITICAL ERROR: No Database URL found in environment variables!")
+            print("❌ CRITICAL: No Database URL found in environment variables!")
             return
 
-        # اصلاح فرمت آدرس برای پایتون
         if self.db_url.startswith("postgres://"):
             self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
 
-        # تلاش برای اتصال
         for i in range(3):
             try:
                 self.conn = psycopg2.connect(self.db_url)
@@ -26,7 +24,6 @@ class Database:
                 print(f"Database connection attempt {i+1} failed: {e}")
                 time.sleep(2)
         else:
-            print("❌ Could not connect to PostgreSQL after 3 attempts.")
             return
 
         self.create_tables()
