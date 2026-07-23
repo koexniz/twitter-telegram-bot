@@ -20,7 +20,7 @@ CONCURRENT_LIMIT = 5
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-db = Database("data/bot_data.db")
+db = Database()
 
 RSS_SOURCES = [
     "https://rsshub.app/twitter/user/{username}",
