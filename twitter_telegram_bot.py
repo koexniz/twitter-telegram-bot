@@ -268,7 +268,7 @@ from typing import Optional, Any
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "twitter-x.p.rapidapi.com")
-
+USER_ID_CACHE = {}
 async def fetch_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
     if not valid_username(username) or not RAPIDAPI_KEY:
@@ -282,34 +282,36 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            # ۱. تبدیل یوزرنیم به user_id (اگر API مستقیم یوزرنیم قبول می‌کنه می‌تونی مستقیم درخواست بزنی)
-            # ابتدا جزییات کاربر رو می‌گیریم تا user_id استخراج بشه
-            user_url = f"https://{RAPIDAPI_HOST}/user/details?username={username}"
-            user_res = await client.get(user_url, headers=headers)
-            
-            user_id = None
-            if user_res.status_code == 200:
-                data = user_res.json()
-                # با توجه به خروجی API، مقدار id_str یا rest_id استخراج میشه
-                user_id = data.get("rest_id") or data.get("id_str") or data.get("result", {}).get("rest_id")
+            # ۱. بررسی اینکه آیا user_id قبلاً ذخیره شده یا نه
+            user_id = USER_ID_CACHE.get(username)
+
+            # اگر ID ذخیره نشده بود، فقط یک‌بار از API می‌گیریم
+            if not user_id:
+                user_url = f"https://{RAPIDAPI_HOST}/user/details?username={username}"
+                user_res = await client.get(user_url, headers=headers)
+                
+                if user_res.status_code == 200:
+                    data = user_res.json()
+                    user_id = data.get("rest_id") or data.get("id_str") or data.get("result", {}).get("rest_id")
+                    if user_id:
+                        USER_ID_CACHE[username] = user_id  # ذخیره در کش
+                elif user_res.status_code == 429:
+                    print(f"Rate limited on user/details for {username}")
+                    return None
 
             if not user_id:
                 return None
 
-            # ۲. دریافت توئیت‌های کاربر با استفاده از user_id
+            # ۲. دریافت مستقیم توئیت‌ها با user_id ذخیره شده
             tweets_url = f"https://{RAPIDAPI_HOST}/user/tweetsandreplies?user_id={user_id}&limit=5"
             res = await client.get(tweets_url, headers=headers)
 
             if res.status_code == 200:
                 tweets_data = res.json()
-                
-                # استخراج توئیت‌ها از پاسخ API
                 instructions = tweets_data.get("instructions", []) or tweets_data.get("data", [])
                 entries = []
 
-                # پیمایش ساختار خروجی توئیت‌ها
                 for item in instructions:
-                    # تفکیک ساختار بر اساس خروجی API
                     entries_list = item.get("entries", []) if isinstance(item, dict) else []
                     for entry in entries_list:
                         tweet_result = entry.get("content", {}).get("itemContent", {}).get("tweet_results", {}).get("result", {})
@@ -336,10 +338,9 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
                     return f
 
         except Exception as e:
-            print(f"RapidAPI Error for {username}: {e}")
+            print(f"RapidAPI Fetch Error for {username}: {e}")
 
     return None
-
 def extract_tweet_id(entry: Any) -> str:
     for text in (entry.get("link", ""), entry.get("id", ""), entry.get("guid", "")):
         m = re.search(r"(\d{15,})", str(text))
