@@ -12,6 +12,7 @@ from telegram.constants import ParseMode
 from database import Database  # فرض بر اینکه فایل بالا را ذخیره کردید
 
 load_dotenv()
+db = Database("data/bot_data.db") # حالا این متد خودش پوشه را می‌سازد
 
 # Config
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
