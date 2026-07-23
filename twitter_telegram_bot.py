@@ -11,7 +11,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
-    CommandHander,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
