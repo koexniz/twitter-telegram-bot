@@ -124,6 +124,7 @@ async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Background Worker ---
 async def process_user(username, last_id, sem, bot):
+    logger.info(f"🔍 Checking updates for @{username}...") # این خط را اضافه کن
     entries = await fetch_feed(username, sem)
     if not entries: return
     
