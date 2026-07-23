@@ -88,36 +88,48 @@ def save_tracked():
 # ---------------------------------------------------------
 async def fetch_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
-    if not valid_username(username) or not RAPIDAPI_KEY:
+    if not valid_username(username):
         return None
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for ep in RAPID_ENDPOINTS:
-            headers = {
-                "x-rapidapi-host": ep["host"],
-                "x-rapidapi-key": RAPIDAPI_KEY,
-                "Content-Type": "application/json",
-            }
-            url = ep["url"].format(username=username)
+    # ۱. ابتدا سرویس‌های RapidAPI تست می‌شوند
+    if RAPIDAPI_KEY:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            for ep in RAPID_ENDPOINTS:
+                headers = {
+                    "x-rapidapi-host": ep["host"],
+                    "x-rapidapi-key": RAPIDAPI_KEY,
+                    "Content-Type": "application/json",
+                }
+                url = ep["url"].format(username=username)
 
-            try:
-                res = await client.get(url, headers=headers)
-                if res.status_code == 200:
-                    data = res.json()
-                    entries = []
+                try:
+                    res = await client.get(url, headers=headers)
+                    if res.status_code == 200:
+                        data = res.json()
+                        entries = []
+                        user_data = data.get("data", {}).get("user", {}).get("result", {}) or data
+                        timeline = user_data.get("timeline", {}) or user_data.get("tweets", [])
 
-                    user_data = data.get("data", {}).get("user", {}).get("result", {}) or data
-                    timeline = user_data.get("timeline", {}) or user_data.get("tweets", [])
+                        if isinstance(timeline, dict):
+                            instructions = timeline.get("instructions", [])
+                            for item in instructions:
+                                for entry in item.get("entries", []):
+                                    tweet_res = entry.get("content", {}).get("itemContent", {}).get("tweet_results", {}).get("result", {})
+                                    legacy = tweet_res.get("legacy", {})
+                                    tid = legacy.get("id_str") or tweet_res.get("rest_id")
+                                    text = legacy.get("full_text") or legacy.get("text", "")
 
-                    if isinstance(timeline, dict):
-                        instructions = timeline.get("instructions", [])
-                        for item in instructions:
-                            for entry in item.get("entries", []):
-                                tweet_res = entry.get("content", {}).get("itemContent", {}).get("tweet_results", {}).get("result", {})
-                                legacy = tweet_res.get("legacy", {})
-                                tid = legacy.get("id_str") or tweet_res.get("rest_id")
-                                text = legacy.get("full_text") or legacy.get("text", "")
-
+                                    if tid and text:
+                                        entries.append({
+                                            "id": str(tid),
+                                            "link": f"https://x.com/{username}/status/{tid}",
+                                            "title": text,
+                                            "summary": text,
+                                        })
+                        elif isinstance(timeline, list):
+                            for t in timeline:
+                                tid = t.get("id_str") or t.get("id")
+                                text = t.get("full_text") or t.get("text", "")
                                 if tid and text:
                                     entries.append({
                                         "id": str(tid),
@@ -125,25 +137,31 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
                                         "title": text,
                                         "summary": text,
                                     })
-                    elif isinstance(timeline, list):
-                        for t in timeline:
-                            tid = t.get("id_str") or t.get("id")
-                            text = t.get("full_text") or t.get("text", "")
-                            if tid and text:
-                                entries.append({
-                                    "id": str(tid),
-                                    "link": f"https://x.com/{username}/status/{tid}",
-                                    "title": text,
-                                    "summary": text,
-                                })
 
-                    if entries:
-                        class DummyFeed:
-                            pass
+                        if entries:
+                            class DummyFeed:
+                                pass
+                            f = DummyFeed()
+                            f.entries = entries
+                            return f
+                except Exception:
+                    continue
 
-                        f = DummyFeed()
-                        f.entries = entries
-                        return f
+    # ۲. اگر RapidAPI ارور ۴۲۹ داد، سورس‌های آزاد و رایگان تست می‌شوند
+    fallback_urls = [
+        f"https://nitter.privacydev.net/{username}/rss",
+        f"https://nitter.poast.org/{username}/rss"
+    ]
+    
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        for url in fallback_urls:
+            try:
+                res = await client.get(url, headers=headers, follow_redirects=True)
+                if res.status_code == 200 and res.content:
+                    feed = feedparser.parse(res.content)
+                    if feed and hasattr(feed, 'entries') and feed.entries:
+                        return feed
             except Exception:
                 continue
 
@@ -160,11 +178,14 @@ async def check_tweets_job(context: ContextTypes.DEFAULT_TYPE):
     for chat_id, accounts in list(TRACKED_DATA.items()):
         for username, last_id in list(accounts.items()):
             feed = await fetch_rss_feed(username)
+            
+            # 👈 ایجاد وقفه ۱.۵ ثانیه‌ای برای جلوگیری از ۴۲۹
+            await asyncio.sleep(1.5)
+
             if feed and hasattr(feed, "entries") and feed.entries:
                 latest = feed.entries[0]
                 latest_id = str(latest.get("id", ""))
 
-                # اگر توئیت جدیدی ثبت شده بود
                 if latest_id and latest_id != last_id:
                     TRACKED_DATA[chat_id][username] = latest_id
                     save_tracked()
