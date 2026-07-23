@@ -261,13 +261,14 @@ async def fetch_single_source(client: httpx.AsyncClient, template: str, username
     except Exception:
         pass
     return None
-
 import os
 import httpx
 from typing import Optional, Any
 
+# کلید اصلی API
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "cbf5caed10msh6eef77ac9dc816fp12095bjsnfd641f9fe9c0")
 
+# لیست اندپوینت‌های چرخشی برای جلوگیری از ۴۲۹ و قطعی
 RAPID_ENDPOINTS = [
     {
         "host": "twitter32.p.rapidapi.com",
@@ -348,7 +349,6 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
                 continue
 
     return None
-
             # ۲. دریافت مستقیم توئیت‌ها با user_id ذخیره شده
             tweets_url = f"https://{RAPIDAPI_HOST}/user/tweetsandreplies?user_id={user_id}&limit=5"
             res = await client.get(tweets_url, headers=headers)
