@@ -3,10 +3,9 @@ import re
 import json
 import logging
 import asyncio
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, Dict
 
 import httpx
-import feedparser
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -18,7 +17,7 @@ from telegram.ext import (
 )
 
 # ---------------------------------------------------------
-# Logging Configuration
+# تنظیمات لاگینگ
 # ---------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -27,27 +26,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------
-# Configuration & Environment Variables
+# متغیرهای محیطی
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "cbf5caed10msh6eef77ac9dc816fp12095bjsnfd641f9fe9c0")
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # هر ۵ دقیقه
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # بررسی هر ۵ دقیقه
 TRACKED_FILE = "tracked_accounts.json"
 
-# لیست سرویس‌های RapidAPI جهت چرخش خودکار و جلوگیری از ۴۲۹
+# لیست اندپوینت‌های چرخشی RapidAPI
 RAPID_ENDPOINTS = [
     {
         "host": "twitter32.p.rapidapi.com",
         "url": "https://twitter32.p.rapidapi.com/getUserByScreenName?screen_name={username}"
-    },
-    {
-        "host": "twitter-v23.p.rapidapi.com",
-        "url": "https://twitter-v23.p.rapidapi.com/v2/UserByScreenName/?username={username}"
-    },
-    {
-        "host": "x-com2.p.rapidapi.com",
-        "url": "https://x-com2.p.rapidapi.com/UserByScreenName/?username={username}"
     },
     {
         "host": "twitter-v24.p.rapidapi.com",
@@ -60,7 +51,7 @@ TRACKED_DATA: Dict[str, Dict[str, str]] = {}
 
 
 # ---------------------------------------------------------
-# Helper Functions
+# توابع کمکی
 # ---------------------------------------------------------
 def clean_username(raw: str) -> str:
     u = raw.strip().replace("@", "")
@@ -80,7 +71,7 @@ def load_tracked():
             with open(TRACKED_FILE, "r", encoding="utf-8") as f:
                 TRACKED_DATA = json.load(f)
         except Exception as e:
-            logger.error(f"Error loading {TRACKED_FILE}: {e}")
+            logger.error(f"خطا در خواندن فایل ذخیره: {e}")
             TRACKED_DATA = {}
 
 
@@ -89,11 +80,11 @@ def save_tracked():
         with open(TRACKED_FILE, "w", encoding="utf-8") as f:
             json.dump(TRACKED_DATA, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Error saving {TRACKED_FILE}: {e}")
+        logger.error(f"خطا در ذخیره‌سازی: {e}")
 
 
 # ---------------------------------------------------------
-# API Fetcher (No Indentation Issues)
+# دریافت توئیت‌ها از API
 # ---------------------------------------------------------
 async def fetch_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
@@ -160,19 +151,29 @@ async def fetch_rss_feed(username: str) -> Optional[Any]:
 
 
 # ---------------------------------------------------------
-# Background Task & Bot Handlers
+# چک کردن خودکار دوره‌ای (Job)
 # ---------------------------------------------------------
 async def check_tweets_job(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id, accounts in TRACKED_DATA.items():
+    if not TRACKED_DATA:
+        return
+
+    for chat_id, accounts in list(TRACKED_DATA.items()):
         for username, last_id in list(accounts.items()):
             feed = await fetch_rss_feed(username)
             if feed and hasattr(feed, "entries") and feed.entries:
                 latest = feed.entries[0]
                 latest_id = str(latest.get("id", ""))
+
+                # اگر توئیت جدیدی ثبت شده بود
                 if latest_id and latest_id != last_id:
                     TRACKED_DATA[chat_id][username] = latest_id
                     save_tracked()
-                    msg = f"🔔 <b>توئیت جدید از @{username}</b>\n\n{latest.get('title', '')}\n\n🔗 <a href='{latest.get('link', '')}'>مشاهده در ایکس</a>"
+                    
+                    msg = (
+                        f"🔔 <b>توئیت جدید از @{username}</b>\n\n"
+                        f"{latest.get('title', '')}\n\n"
+                        f"🔗 <a href='{latest.get('link', '')}'>مشاهده در ایکس</a>"
+                    )
                     try:
                         await context.bot.send_message(
                             chat_id=int(chat_id),
@@ -181,16 +182,31 @@ async def check_tweets_job(context: ContextTypes.DEFAULT_TYPE):
                             disable_web_page_preview=False,
                         )
                     except Exception as e:
-                        logger.error(f"Error sending message: {e}")
+                        logger.error(f"خطا در ارسال پیام به {chat_id}: {e}")
 
 
+# ---------------------------------------------------------
+# دستورات تلگرام
+# ---------------------------------------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ربات مانیتورینگ توییتر با موفقیت فعال شد! ✅\nبرای راهنما دستور /help را بفرستید.")
+    text = (
+        "🤖 <b>ربات مانیتورینگ توییتر فعال است!</b>\n\n"
+        "دستورات عمومی:\n"
+        "▫️ `/add username` - افزودن اکانت جدید\n"
+        "▫️ `/remove username` - حذف اکانت\n"
+        "▫️ `/list` - مشاهده لیست اکانت‌های فعال\n"
+        "▫️ `/help` - راهنمای ربات"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await cmd_start(update, context)
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("لطفاً حداقل یک یوزرنیم وارد کنید.\nمثال: `/add elonmusk`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⚠️ لطفاً نام کاربری را وارد کنید.\nمثال: `/add elonmusk`", parse_mode=ParseMode.MARKDOWN)
         return
 
     chat_id = str(update.effective_chat.id)
@@ -204,10 +220,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valid_users.append(u)
 
     if not valid_users:
-        await update.message.reply_text("❌ هیچ یوزرنیم معتبری یافت نشد.")
+        await update.message.reply_text("❌ هیچ نام کاربری معتبری یافت نشد.")
         return
 
-    msg = await update.message.reply_text(f"⏳ در حال بررسی {len(valid_users)} اکانت...")
+    status_msg = await update.message.reply_text(f"⏳ در حال اضافه کردن {len(valid_users)} اکانت...")
 
     if chat_id not in TRACKED_DATA:
         TRACKED_DATA[chat_id] = {}
@@ -222,26 +238,62 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if added:
         save_tracked()
-        await msg.edit_text(f"✅ تعداد {len(added)} اکانت اضافه شد:\n" + "\n".join(f"- @{u}" for u in added))
+        await status_msg.edit_text(f"✅ اکانت‌های زیر به لیست اضافه شدند:\n" + "\n".join(f"• @{u}" for u in added))
     else:
-        await msg.edit_text("ℹ️ تمام اکانت‌ها از قبل موجود بودند.")
+        await status_msg.edit_text("ℹ️ این اکانت(ها) قبلاً اضافه شده بودند.")
 
 
+async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ لطفاً نام کاربری مورد نظر را وارد کنید.\nمثال: `/remove elonmusk`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    chat_id = str(update.effective_chat.id)
+    u = clean_username(context.args[0])
+
+    if chat_id in TRACKED_DATA and u in TRACKED_DATA[chat_id]:
+        del TRACKED_DATA[chat_id][u]
+        save_tracked()
+        await update.message.reply_text(f"✅ اکانت @{u} از لیست حذف شد.")
+    else:
+        await update.message.reply_text(f"❌ اکانت @{u} در لیست یافت نشد.")
+
+
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    accounts = TRACKED_DATA.get(chat_id, {})
+
+    if not accounts:
+        await update.message.reply_text("📋 لیست اکانت‌های تحت نظر شما خالی است.\nبا دستور `/add` اکانت اضافه کنید.")
+        return
+
+    text = "📋 <b>اکانت‌های تحت نظر شما:</b>\n\n" + "\n".join(f"• @{u}" for u in accounts.keys())
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+# ---------------------------------------------------------
+# اجرای اصلی
+# ---------------------------------------------------------
 def main():
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN is not set!")
+        logger.error("خطا: TELEGRAM_BOT_TOKEN ست نشده است!")
         return
 
     load_tracked()
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # ثبت دستورات
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("add", cmd_add))
+    app.add_handler(CommandHandler("remove", cmd_remove))
+    app.add_handler(CommandHandler("list", cmd_list))
 
+    # زمان‌بندی بررسی توئیت‌ها
     if app.job_queue:
         app.job_queue.run_repeating(check_tweets_job, interval=CHECK_INTERVAL, first=10)
 
-    logger.info("Bot started successfully...")
+    logger.info("ربات با موفقیت روشن شد...")
     app.run_polling()
 
 
