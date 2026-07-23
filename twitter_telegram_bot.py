@@ -144,10 +144,37 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 <b>لیست شما:</b>\n\n" + ("\n".join(my_users) if my_users else "خالی"), parse_mode=ParseMode.HTML)
 
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
-    username = clean_username(context.args[0])
-    db.remove_subscription(update.effective_chat.id, username)
-    await update.message.reply_text(f"🗑 <b>@{html.escape(username)}</b> حذف شد.", parse_mode=ParseMode.HTML)
+    if not context.args:
+        await update.message.reply_text("❌ مثال: <code>/del user1 user2</code>", parse_mode=ParseMode.HTML)
+        return
+    
+    # استخراج و تمیز کردن یوزرنیم‌ها (پشتیبانی از فاصله و کاما)
+    raw_input = " ".join(context.args)
+    usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
+    chat_id = str(update.effective_chat.id)
+    
+    removed = []
+    not_found = []
+
+    for u in usernames:
+        # بررسی اینکه آیا یوزر در لیست این چت هست یا نه
+        if db.is_subscribed(chat_id, u):
+            db.remove_subscription(chat_id, u)
+            removed.append(f"@{u}")
+        else:
+            not_found.append(f"@{u}")
+
+    # ساخت گزارش نهایی
+    res = "🗑 <b>گزارش حذف:</b>\n\n"
+    if removed:
+        res += f"✅ موارد حذف شده: <code>{', '.join(removed)}</code>\n"
+    if not_found:
+        res += f"❓ در لیست شما نبودند: <code>{', '.join(not_found)}</code>"
+    
+    if not removed and not not_found:
+        res = "❌ یوزر معتبری برای حذف پیدا نشد."
+
+    await update.message.reply_text(res, parse_mode=ParseMode.HTML)
 
 # --- Background Worker ---
 async def process_user(username, last_id, sem, bot):
