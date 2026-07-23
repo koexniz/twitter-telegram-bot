@@ -266,41 +266,100 @@ import os
 import httpx
 from typing import Optional, Any
 
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "twitter-x.p.rapidapi.com")
-USER_ID_CACHE = {}
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "cbf5caed10msh6eef77ac9dc816fp12095bjsnfd641f9fe9c0")
+
+# لیست سرویس‌های مختلفی که داری (برای Rotation)
+RAPID_ENDPOINTS = [
+    {
+        "host": "twitter32.p.rapidapi.com",
+        "url": "https://twitter32.p.rapidapi.com/getUserByScreenName?screen_name={username}",
+        "type": "twitter32"
+    },
+    {
+        "host": "twitter-v23.p.rapidapi.com",
+        "url": "https://twitter-v23.p.rapidapi.com/v2/UserByScreenName/?username={username}",
+        "type": "v23"
+    },
+    {
+        "host": "x-com2.p.rapidapi.com",
+        "url": "https://x-com2.p.rapidapi.com/UserByScreenName/?username={username}",
+        "type": "xcom2"
+    },
+    {
+        "host": "twitter-v24.p.rapidapi.com",
+        "url": "https://twitter-v24.p.rapidapi.com/user/about?username={username}",
+        "type": "v24"
+    }
+]
+
 async def fetch_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
     if not valid_username(username) or not RAPIDAPI_KEY:
         return None
 
-    headers = {
-        "x-rapidapi-host": RAPIDAPI_HOST,
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "Content-Type": "application/json"
-    }
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        # تست یکی‌یکی APIها تا زمانی که یکی پاسخ ۲٠٠ بده
+        for ep in RAPID_ENDPOINTS:
+            headers = {
+                "x-rapidapi-host": ep["host"],
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "Content-Type": "application/json"
+            }
+            url = ep["url"].format(username=username)
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            # ۱. بررسی اینکه آیا user_id قبلاً ذخیره شده یا نه
-            user_id = USER_ID_CACHE.get(username)
-
-            # اگر ID ذخیره نشده بود، فقط یک‌بار از API می‌گیریم
-            if not user_id:
-                user_url = f"https://{RAPIDAPI_HOST}/user/details?username={username}"
-                user_res = await client.get(user_url, headers=headers)
+            try:
+                res = await client.get(url, headers=headers)
                 
-                if user_res.status_code == 200:
-                    data = user_res.json()
-                    user_id = data.get("rest_id") or data.get("id_str") or data.get("result", {}).get("rest_id")
-                    if user_id:
-                        USER_ID_CACHE[username] = user_id  # ذخیره در کش
-                elif user_res.status_code == 429:
-                    print(f"Rate limited on user/details for {username}")
-                    return None
+                # اگر درخواست موفق بود و ۴۲۹ یا ارور نداشت
+                if res.status_code == 200:
+                    data = res.json()
+                    entries = []
 
-            if not user_id:
-                return None
+                    # استخراج توئیت‌ها بر اساس نوع API
+                    # ۱. ساختار عمومی Twitter32 / UserByScreenName
+                    user_data = data.get("data", {}).get("user", {}).get("result", {}) or data
+                    timeline = user_data.get("timeline", {}) or user_data.get("tweets", [])
+                    
+                    if isinstance(timeline, dict):
+                        instructions = timeline.get("instructions", [])
+                        for item in instructions:
+                            for entry in item.get("entries", []):
+                                tweet_res = entry.get("content", {}).get("itemContent", {}).get("tweet_results", {}).get("result", {})
+                                legacy = tweet_res.get("legacy", {})
+                                tid = legacy.get("id_str") or tweet_res.get("rest_id")
+                                text = legacy.get("full_text") or legacy.get("text", "")
+
+                                if tid and text:
+                                    entries.append({
+                                        "id": str(tid),
+                                        "link": f"https://x.com/{username}/status/{tid}",
+                                        "title": text,
+                                        "summary": text
+                                    })
+                    elif isinstance(timeline, list):
+                        for t in timeline:
+                            tid = t.get("id_str") or t.get("id")
+                            text = t.get("full_text") or t.get("text", "")
+                            if tid and text:
+                                entries.append({
+                                    "id": str(tid),
+                                    "link": f"https://x.com/{username}/status/{tid}",
+                                    "title": text,
+                                    "summary": text
+                                })
+
+                    if entries:
+                        class DummyFeed:
+                            pass
+                        f = DummyFeed()
+                        f.entries = entries
+                        return f
+
+            except Exception:
+                # اگر این سرویس ارور داد یا ۴۲۹ شد، بره سراغ API بعدی
+                continue
+
+    return None
 
             # ۲. دریافت مستقیم توئیت‌ها با user_id ذخیره شده
             tweets_url = f"https://{RAPIDAPI_HOST}/user/tweetsandreplies?user_id={user_id}&limit=5"
