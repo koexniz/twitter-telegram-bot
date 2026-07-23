@@ -46,49 +46,59 @@ def extract_id(entry):
     m = re.search(r"(\d{15,})", guid)
     return m.group(1) if m else None
 
-async def fetch_feed(username, semaphore):
-    async with semaphore:
-        for src in RSS_SOURCES:
-            url = src.format(username=username)
-            try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    resp = await client.get(url)
-                    if resp.status_code == 200:
-                        feed = feedparser.parse(resp.text)
-                        if feed.entries: return feed.entries
-            except: continue
-        return []
+async def fetch_feed_task(username, semaphore):
+    """تابع کمکی برای اجرای موازی"""
+    entries = await fetch_feed(username, semaphore)
+    return username, entries
 
-# --- Handlers ---
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ مثال: `/add user1 user2`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ مثال: `/add user1 user2`")
         return
     
     raw_input = " ".join(context.args)
-    usernames = [clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]
+    usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
     chat_id = str(update.effective_chat.id)
-    added, skipped, failed = [], [], []
-
-    wait = await update.message.reply_text("⏳ در حال بررسی...")
-    sem = asyncio.Semaphore(2)
-
+    
+    wait = await update.message.reply_text(f"⏳ در حال استعلام موازی {len(usernames)} اکانت...")
+    
+    # فیلتر کردن یوزرهای نامعتبر یا تکراری قبل از استعلام
+    to_fetch = []
+    skipped = []
+    failed = []
     for u in usernames:
         if not is_valid_twitter(u):
-            failed.append(u); continue
-        if db.is_subscribed(chat_id, u):
-            skipped.append(u); continue
-        
-        entries = await fetch_feed(u, sem)
-        last_id = extract_id(entries[0]) if entries else ""
-        db.add_subscription(chat_id, u, last_id)
-        added.append(f"@{u}")
+            failed.append(u)
+        elif db.is_subscribed(chat_id, u):
+            skipped.append(u)
+        else:
+            to_fetch.append(u)
 
-    res = "✅ **گزارش:**\n"
-    if added: res += f"🔹 اضافه شد: {', '.join(added)}\n"
-    if skipped: res += f"🔸 قبلاً بود: {', '.join(skipped)}\n"
-    if failed: res += f"❌ نامعتبر: {', '.join(failed)}"
-    await wait.edit_text(res, parse_mode=ParseMode.MARKDOWN)
+    # اجرای تمام استعلام‌ها به صورت همزمان
+    semaphore = asyncio.Semaphore(10) # اجازه ۱۰ درخواست همزمان
+    tasks = [fetch_feed_task(u, semaphore) for u in to_fetch]
+    
+    results = await asyncio.gather(*tasks)
+    
+    added = []
+    for username, entries in results:
+        if entries:
+            last_id = extract_id(entries[0])
+            db.add_subscription(chat_id, username, last_id)
+            added.append(f"@{username}")
+        else:
+            failed.append(username)
+
+    # ساخت گزارش نهایی
+    res_parts = ["✅ **گزارش نهایی:**"]
+    if added: res_parts.append(f"🔹 اضافه شد ({len(added)}): {', '.join(added)}")
+    if skipped: res_parts.append(f"🔸 از قبل بود ({len(skipped)}): {', '.join(skipped)}")
+    if failed: res_parts.append(f"❌ ناموفق ({len(failed)}): {', '.join(failed)}")
+    
+    final_text = "\n\n".join(res_parts)
+    if len(final_text) > 4000: final_text = final_text[:3900] + "..."
+    
+    await wait.edit_text(final_text, parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
