@@ -4,6 +4,7 @@ import logging
 import feedparser
 import re
 import httpx
+import html
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -12,10 +13,10 @@ from database import Database
 
 load_dotenv()
 
-# Config
+# --- Config ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "90"))
-CONCURRENT_LIMIT = 5
+CONCURRENT_LIMIT = 10 # تعداد اکانت‌هایی که همزمان در پس‌زمینه چک می‌شوند
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,9 +24,9 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 RSS_SOURCES = [
-    "https://rsshub.app/twitter/user/{username}",
     "https://nitter.net/{username}/rss",
-    "https://xcancel.com/{username}/rss"
+    "https://xcancel.com/{username}/rss",
+    "https://rsshub.app/twitter/user/{username}"
 ]
 
 # --- Helpers ---
@@ -46,14 +47,32 @@ def extract_id(entry):
     m = re.search(r"(\d{15,})", guid)
     return m.group(1) if m else None
 
+async def fetch_feed(username, semaphore):
+    """تابع اصلی واکشی RSS از سورس‌های مختلف"""
+    async with semaphore:
+        for src in RSS_SOURCES:
+            url = src.format(username=username)
+            try:
+                async with httpx.AsyncClient(timeout=7) as client:
+                    resp = await client.get(url, follow_redirects=True)
+                    if resp.status_code == 200:
+                        feed = feedparser.parse(resp.text)
+                        if feed.entries: return feed.entries
+            except Exception:
+                continue
+        return []
+
 async def fetch_feed_task(username, semaphore):
-    """تابع کمکی برای اجرای موازی"""
     entries = await fetch_feed(username, semaphore)
     return username, entries
 
+# --- Handlers ---
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 ربات مانیتورینگ توییتر فعال است!\n\n🔹 برای افزودن: `/add user1 user2` \n🔹 برای لیست: `/list` \n🔹 برای حذف: `/del user1`", parse_mode=ParseMode.HTML)
+
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ مثال: `/add user1 user2`")
+        await update.message.reply_text("❌ مثال: <code>/add elonmusk</code>", parse_mode=ParseMode.HTML)
         return
     
     raw_input = " ".join(context.args)
@@ -62,22 +81,14 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     wait = await update.message.reply_text(f"⏳ در حال استعلام موازی {len(usernames)} اکانت...")
     
-    # فیلتر کردن یوزرهای نامعتبر یا تکراری قبل از استعلام
-    to_fetch = []
-    skipped = []
-    failed = []
+    to_fetch, skipped, failed = [], [], []
     for u in usernames:
-        if not is_valid_twitter(u):
-            failed.append(u)
-        elif db.is_subscribed(chat_id, u):
-            skipped.append(u)
-        else:
-            to_fetch.append(u)
+        if not is_valid_twitter(u): failed.append(u)
+        elif db.is_subscribed(chat_id, u): skipped.append(u)
+        else: to_fetch.append(u)
 
-    # اجرای تمام استعلام‌ها به صورت همزمان
-    semaphore = asyncio.Semaphore(10) # اجازه ۱۰ درخواست همزمان
-    tasks = [fetch_feed_task(u, semaphore) for u in to_fetch]
-    
+    sem = asyncio.Semaphore(10)
+    tasks = [fetch_feed_task(u, sem) for u in to_fetch]
     results = await asyncio.gather(*tasks)
     
     added = []
@@ -86,50 +97,32 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_id = extract_id(entries[0])
             db.add_subscription(chat_id, username, last_id)
             added.append(f"@{username}")
-        else:
-            failed.append(username)
+        else: failed.append(username)
 
-    # ساخت گزارش نهایی
-    res_parts = ["✅ **گزارش نهایی:**"]
-    if added: res_parts.append(f"🔹 اضافه شد ({len(added)}): {', '.join(added)}")
-    if skipped: res_parts.append(f"🔸 از قبل بود ({len(skipped)}): {', '.join(skipped)}")
-    if failed: res_parts.append(f"❌ ناموفق ({len(failed)}): {', '.join(failed)}")
+    res = "✅ <b>گزارش نهایی:</b>\n\n"
+    if added: res += f"🔹 اضافه شد ({len(added)}): <code>{', '.join(added)}</code>\n"
+    if skipped: res += f"🔸 قبلاً بود ({len(skipped)}): <code>{', '.join(skipped)}</code>\n"
+    if failed: res += f"❌ ناموفق ({len(failed)}): <code>{', '.join(failed)}</code>"
     
-    final_text = "\n\n".join(res_parts)
-    if len(final_text) > 4000: final_text = final_text[:3900] + "..."
-    
-    await wait.edit_text(final_text, parse_mode=ParseMode.MARKDOWN)
+    await wait.edit_text(res, parse_mode=ParseMode.HTML)
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     all_tracked = db.get_all_tracked()
-    my_users = []
-    for u, _ in all_tracked:
-        if db.is_subscribed(chat_id, u):
-            my_users.append(f"@{u}")
+    my_users = [f"@{html.escape(u)}" for u, _ in all_tracked if db.is_subscribed(chat_id, u)]
     
     if not my_users:
         await update.message.reply_text("لیست شما خالی است.")
     else:
-        await update.message.reply_text("📋 **لیست شما:**\n" + "\n".join(my_users), parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("📋 <b>لیست اکانت‌های شما:</b>\n\n" + "\n".join(my_users), parse_mode=ParseMode.HTML)
 
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
     username = clean_username(context.args[0])
     db.remove_subscription(update.effective_chat.id, username)
-    await update.message.reply_text(f"🗑 @{username} حذف شد.")
+    await update.message.reply_text(f"🗑 <b>@{html.escape(username)}</b> از لیست حذف شد.", parse_mode=ParseMode.HTML)
 
-# --- Background Task ---
-async def check_updates(context: ContextTypes.DEFAULT_TYPE):
-    tracked = db.get_all_tracked()
-    if not tracked: return
-    
-    sem = asyncio.Semaphore(CONCURRENT_LIMIT)
-    tasks = []
-    for username, last_id in tracked:
-        tasks.append(process_user(username, last_id, sem, context.application.bot))
-    await asyncio.gather(*tasks)
-
+# --- Background Worker ---
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
     if not entries: return
@@ -139,29 +132,47 @@ async def process_user(username, last_id, sem, bot):
         tid = extract_id(entry)
         if not tid or tid == last_id: continue
         
-        for cid in db.get_subs_for_user(username):
+        cids = db.get_subs_for_user(username)
+        for cid in cids:
             if not db.is_duplicate(cid, tid):
                 try:
-                    text = f"🐦 **@{username}**\n\n{entry.get('title')}"
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("View", url=entry.get('link'))]])
-                    await bot.send_message(chat_id=cid, text=text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+                    safe_name = html.escape(username)
+                    safe_title = html.escape(entry.get("title", ""))
+                    text = f"🐦 <b>@{safe_name}</b>\n\n{safe_title}"
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("مشاهده در X", url=entry.get('link'))]])
+                    await bot.send_message(chat_id=cid, text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
                     db.mark_sent(cid, tid)
-                except: pass
+                except Exception as e:
+                    logger.error(f"Send error: {e}")
         new_last_id = tid
     
     if new_last_id != last_id:
         db.update_last_id(username, new_last_id)
 
+async def check_updates(context: ContextTypes.DEFAULT_TYPE):
+    tracked = db.get_all_tracked()
+    if not tracked: return
+    
+    sem = asyncio.Semaphore(CONCURRENT_LIMIT)
+    tasks = [process_user(u, li, sem, context.application.bot) for u, li in tracked]
+    await asyncio.gather(*tasks)
+
 def main():
+    if not TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN missing!")
+        return
+        
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("خوش آمدید!")))
+    
+    app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("del", cmd_del))
     
     app.job_queue.run_repeating(check_updates, interval=CHECK_INTERVAL, first=10)
-    logger.info("Bot started...")
-    app.run_polling()
+    
+    logger.info("Bot is running...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
