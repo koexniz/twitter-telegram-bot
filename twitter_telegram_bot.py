@@ -245,17 +245,15 @@ async def fetch_single_source(client: httpx.AsyncClient, template: str, username
             url, 
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }, 
             follow_redirects=True
         )
-        
-        # اگر پاسخ سالم بود (کد 200)
         if res.status_code == 200 and res.content:
             feed = feedparser.parse(res.content)
             if feed and hasattr(feed, 'entries') and feed.entries:
                 first_title = (feed.entries[0].get("title", "") or "").lower()
-                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "404 not found", "error", "blocked")):
+                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "404 not found", "blocked")):
                     return feed
     except Exception:
         pass
