@@ -41,10 +41,8 @@ BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL", "21600"))
 
 RSS_SOURCES = [
     "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.poast.org/{username}/rss",
-    "https://nitter.hu/{username}/rss",
-    "https://nitter.catsarch.com/{username}/rss",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://nitter.no-name-given.com/{username}/rss",
+    "https://nitter.freedit.eu/{username}/rss",
 ]
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
@@ -243,19 +241,18 @@ async def fetch_single_source(client: httpx.AsyncClient, template: str, username
     url = template.format(username=username)
     try:
         res = await client.get(
-            url, 
+            url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            }, 
-            follow_redirects=True
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*"
+            },
+            follow_redirects=True,
+            timeout=5.0
         )
         if res.status_code == 200 and res.content:
             feed = feedparser.parse(res.content)
             if feed and hasattr(feed, 'entries') and feed.entries:
-                first_title = (feed.entries[0].get("title", "") or "").lower()
-                if not any(x in first_title for x in ("whitelist", "rss reader", "not yet", "404 not found", "blocked")):
-                    return feed
+                return feed
     except Exception:
         pass
     return None
