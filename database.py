@@ -1,27 +1,43 @@
 import psycopg2
 import os
-from urllib.parse import urlparse
+import time
 
 class Database:
     def __init__(self):
-        # ریلیوی به طور خودکار DATABASE_URL را ست می‌کند
-        db_url = os.getenv("DATABASE_URL")
-        self.conn = psycopg2.connect(db_url)
-        self.conn.autocommit = True
+        # خواندن آدرس از محیط ریلیوی
+        self.db_url = os.getenv("DATABASE_URL")
+        
+        if not self.db_url:
+            raise ValueError("CRITICAL ERROR: DATABASE_URL variable is missing in Railway panel!")
+
+        # اصلاح فرمت آدرس برای پایتون (برخی ورژن‌ها به postgresql نیاز دارند)
+        if self.db_url.startswith("postgres://"):
+            self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
+
+        # تلاش برای اتصال (با ۳ بار تکرار در صورت شلوغی دیتابیس)
+        for i in range(3):
+            try:
+                self.conn = psycopg2.connect(self.db_url)
+                self.conn.autocommit = True
+                break
+            except Exception as e:
+                print(f"Database connection attempt {i+1} failed. Retrying...")
+                time.sleep(2)
+        else:
+            raise Exception("Could not connect to PostgreSQL after 3 attempts.")
+            
         self.create_tables()
 
     def create_tables(self):
         with self.conn.cursor() as cursor:
-            # جدول کاربران توییتر
             cursor.execute('''CREATE TABLE IF NOT EXISTS tracked_users 
                               (username TEXT PRIMARY KEY, last_id TEXT)''')
-            # جدول اشتراک‌ها
             cursor.execute('''CREATE TABLE IF NOT EXISTS subscriptions 
                               (chat_id TEXT, username TEXT, PRIMARY KEY(chat_id, username))''')
-            # جدول جلوگیری از ارسال تکراری
             cursor.execute('''CREATE TABLE IF NOT EXISTS sent_ids 
                               (chat_id TEXT, tweet_id TEXT, PRIMARY KEY(chat_id, tweet_id))''')
 
+    # سایر متدها (get_all_tracked, add_subscription, ...) دقیقاً مثل قبل هستند
     def get_all_tracked(self):
         with self.conn.cursor() as cursor:
             cursor.execute("SELECT username, last_id FROM tracked_users")
@@ -43,7 +59,6 @@ class Database:
 
     def add_subscription(self, chat_id, username, last_id=""):
         with self.conn.cursor() as cursor:
-            # در پستگرس از ON CONFLICT استفاده می‌کنیم
             cursor.execute("INSERT INTO tracked_users (username, last_id) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", (username, last_id))
             cursor.execute("INSERT INTO subscriptions (chat_id, username) VALUES (%s, %s) ON CONFLICT (chat_id, username) DO NOTHING", (str(chat_id), username))
 
