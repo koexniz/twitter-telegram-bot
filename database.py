@@ -1,23 +1,22 @@
 import sqlite3
-import json
+import os
 
 class Database:
-    def __init__(self, db_path="bot_data.db"):
+    def __init__(self, db_path="data/bot_data.db"):
+        # ابتدا مطمئن می‌شویم پوشه وجود دارد
+        db_dir = os.path.dirname(db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.create_tables()
 
     def create_tables(self):
         cursor = self.conn.cursor()
-        # جدول کاربران توییتر و آخرین آیدی دریافتی
         cursor.execute('''CREATE TABLE IF NOT EXISTS tracked_users 
                           (username TEXT PRIMARY KEY, last_id TEXT)''')
-        # جدول اشتراک چت‌ها در یوزرها
         cursor.execute('''CREATE TABLE IF NOT EXISTS subscriptions 
                           (chat_id TEXT, username TEXT, PRIMARY KEY(chat_id, username))''')
-        # جدول تنظیمات فیلتر هر چت
-        cursor.execute('''CREATE TABLE IF NOT EXISTS chat_filters 
-                          (chat_id TEXT PRIMARY KEY, filters_json TEXT)''')
-        # جدول جلوگیری از ارسال تکراری
         cursor.execute('''CREATE TABLE IF NOT EXISTS sent_ids 
                           (chat_id TEXT, tweet_id TEXT, PRIMARY KEY(chat_id, tweet_id))''')
         self.conn.commit()
@@ -45,4 +44,12 @@ class Database:
     def mark_sent(self, chat_id, tweet_id):
         cursor = self.conn.cursor()
         cursor.execute("INSERT OR IGNORE INTO sent_ids (chat_id, tweet_id) VALUES (?, ?)", (str(chat_id), str(tweet_id)))
+        self.conn.commit()
+        
+    def add_subscription(self, chat_id, username):
+        cursor = self.conn.cursor()
+        # افزودن یوزر به لیست مانیتورینگ عمومی اگر وجود ندارد
+        cursor.execute("INSERT OR IGNORE INTO tracked_users (username, last_id) VALUES (?, ?)", (username, ""))
+        # افزودن اشتراک چت خاص
+        cursor.execute("INSERT OR IGNORE INTO subscriptions (chat_id, username) VALUES (?, ?)", (str(chat_id), username))
         self.conn.commit()
