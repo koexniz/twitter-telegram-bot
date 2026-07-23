@@ -262,39 +262,81 @@ async def fetch_single_source(client: httpx.AsyncClient, template: str, username
         pass
     return None
 
+import os
+import httpx
+from typing import Optional, Any
+
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "twitter-x.p.rapidapi.com")
+
 async def fetch_rss_feed(username: str) -> Optional[Any]:
     username = clean_username(username)
-    if not valid_username(username):
+    if not valid_username(username) or not RAPIDAPI_KEY:
         return None
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml, text/xml, */*"
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "Content-Type": "application/json"
     }
 
-    async with httpx.AsyncClient(timeout=6.0) as client:
-        for domain in NITTER_DOMAINS:
-            url = f"{domain}/{username}/rss"
-            try:
-                res = await client.get(url, headers=headers, follow_redirects=True)
-                if res.status_code == 200 and res.content:
-                    feed = feedparser.parse(res.content)
-                    if feed and hasattr(feed, 'entries') and feed.entries:
-                        return feed
-            except Exception:
-                continue
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            # ۱. تبدیل یوزرنیم به user_id (اگر API مستقیم یوزرنیم قبول می‌کنه می‌تونی مستقیم درخواست بزنی)
+            # ابتدا جزییات کاربر رو می‌گیریم تا user_id استخراج بشه
+            user_url = f"https://{RAPIDAPI_HOST}/user/details?username={username}"
+            user_res = await client.get(user_url, headers=headers)
+            
+            user_id = None
+            if user_res.status_code == 200:
+                data = user_res.json()
+                # با توجه به خروجی API، مقدار id_str یا rest_id استخراج میشه
+                user_id = data.get("rest_id") or data.get("id_str") or data.get("result", {}).get("rest_id")
 
-    # اگر تمام دامنه‌های Nitter مسدود بودند، استفاده از RSSHub به عنوان پشتیبان آخر
-    try:
-        fallback_url = f"https://rsshub.app/twitter/user/{username}"
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            res = await client.get(fallback_url, headers=headers, follow_redirects=True)
-            if res.status_code == 200 and res.content:
-                feed = feedparser.parse(res.content)
-                if feed and hasattr(feed, 'entries') and feed.entries:
-                    return feed
-    except Exception:
-        pass
+            if not user_id:
+                return None
+
+            # ۲. دریافت توئیت‌های کاربر با استفاده از user_id
+            tweets_url = f"https://{RAPIDAPI_HOST}/user/tweetsandreplies?user_id={user_id}&limit=5"
+            res = await client.get(tweets_url, headers=headers)
+
+            if res.status_code == 200:
+                tweets_data = res.json()
+                
+                # استخراج توئیت‌ها از پاسخ API
+                instructions = tweets_data.get("instructions", []) or tweets_data.get("data", [])
+                entries = []
+
+                # پیمایش ساختار خروجی توئیت‌ها
+                for item in instructions:
+                    # تفکیک ساختار بر اساس خروجی API
+                    entries_list = item.get("entries", []) if isinstance(item, dict) else []
+                    for entry in entries_list:
+                        tweet_result = entry.get("content", {}).get("itemContent", {}).get("tweet_results", {}).get("result", {})
+                        if not tweet_result:
+                            continue
+                        
+                        legacy = tweet_result.get("legacy", {})
+                        tweet_id = legacy.get("id_str") or tweet_result.get("rest_id")
+                        text = legacy.get("full_text", "")
+
+                        if tweet_id and text:
+                            entries.append({
+                                "id": str(tweet_id),
+                                "link": f"https://x.com/{username}/status/{tweet_id}",
+                                "title": text,
+                                "summary": text
+                            })
+
+                if entries:
+                    class DummyFeed:
+                        pass
+                    f = DummyFeed()
+                    f.entries = entries
+                    return f
+
+        except Exception as e:
+            print(f"RapidAPI Error for {username}: {e}")
 
     return None
 
