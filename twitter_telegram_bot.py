@@ -24,9 +24,11 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 RSS_SOURCES = [
-    "https://nitter.net/{username}/rss",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://nitter.projectsegfau.lt/{username}/rss",
     "https://xcancel.com/{username}/rss",
-    "https://rsshub.app/twitter/user/{username}"
+    "https://nitter.net/{username}/rss"
 ]
 
 # --- Helpers ---
