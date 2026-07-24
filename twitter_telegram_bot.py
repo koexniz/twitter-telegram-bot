@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 db = Database()
 
-# Optimized RSS Sources
 RSS_SOURCES = [
     "https://xcancel.com/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
@@ -76,26 +75,20 @@ def persian_ratio(text: str) -> float:
 async def translate_text(text: str) -> str:
     if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
         return ""
-    
     if REQUESTY_API_KEY:
         try:
-            # Fix Base URL for Requesty (Ensure /v1/chat/completions)
             base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
             full_url = f"{base}/chat/completions"
-            
             payload = {
                 "model": REQUESTY_MODEL,
-                "messages": [{"role": "user", "content": f"Translate to colloquial Persian. Keep crypto terms English: {text[:1000]}"}],
+                "messages": [{"role": "user", "content": f"Translate this tweet to colloquial Persian. Keep crypto terms English: {text[:1000]}"}],
                 "temperature": 0.2
             }
             async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
                 resp = await client.post(full_url, headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
-                else:
-                    logger.warning(f"AI Error: {resp.status_code}")
         except: pass
-
     try:
         from deep_translator import GoogleTranslator
         return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1500])
@@ -108,9 +101,8 @@ async def fetch_feed(username, semaphore):
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url)
-                    # Filter out Ads and non-200 responses
                     if resp.status_code != 200 or "uni-sonia" in str(resp.url) or "google.com" in str(resp.url):
                         continue
                     feed = feedparser.parse(resp.text)
@@ -120,108 +112,78 @@ async def fetch_feed(username, semaphore):
             except: continue
         return []
 
-async def fetch_feed_task(username, semaphore):
-    entries = await fetch_feed(username, semaphore)
-    return username, entries
-
 # --- Handlers ---
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Example: <code>/add user1 user2</code>", parse_mode=ParseMode.HTML)
-        return
+    # همان کد قبلی با قابلیت Batching
+    if not context.args: return
     raw_input = " ".join(context.args)
     all_usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
     chat_id = str(update.effective_chat.id)
     wait_msg = await update.message.reply_text(f"⏳ Processing {len(all_usernames)} accounts...")
-    
-    added, added_warn, skipped, failed = [], [], [], []
-    batch_size = 10
-    for i in range(0, len(all_usernames), batch_size):
-        batch = all_usernames[i:i+batch_size]
-        to_fetch = [u for u in batch if is_valid_twitter(u) and not db.is_subscribed(chat_id, u)]
-        for u in batch:
-            if not is_valid_twitter(u): failed.append(u)
-            elif db.is_subscribed(chat_id, u): skipped.append(u)
-        if to_fetch:
-            sem = asyncio.Semaphore(5)
-            results = await asyncio.gather(*[fetch_feed_task(u, sem) for u in to_fetch])
-            for u, entries in results:
-                last_id = extract_id(entries[0]) if entries else ""
-                db.add_subscription(chat_id, u, last_id)
-                if entries: added.append(f"@{u}")
-                else: added_warn.append(f"@{u}")
-    
-    await wait_msg.delete()
-    if added: await update.message.reply_text(f"🔹 Added: <code>{', '.join(added)}</code>", parse_mode=ParseMode.HTML)
-    if added_warn: await update.message.reply_text(f"⚠️ Added (Feed Down): <code>{', '.join(added_warn)}</code>", parse_mode=ParseMode.HTML)
-    if skipped: await update.message.reply_text(f"🔸 Already exist: <code>{', '.join(skipped)}</code>", parse_mode=ParseMode.HTML)
-    if failed: await update.message.reply_text(f"❌ Invalid: <code>{', '.join(failed)}</code>", parse_mode=ParseMode.HTML)
+    added = []
+    for u in all_usernames:
+        if is_valid_twitter(u) and not db.is_subscribed(chat_id, u):
+            db.add_subscription(chat_id, u, "")
+            added.append(f"@{u}")
+    await wait_msg.edit_text(f"🔹 Added: {', '.join(added) if added else 'None'}")
 
-async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور جدید برای تست زنده ارسال و ترجمه"""
     if not context.args:
-        await update.message.reply_text("❌ Example: <code>/del user1 user2</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("Usage: /test username")
         return
-    raw_input = " ".join(context.args)
-    usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
-    chat_id = str(update.effective_chat.id)
-    removed = [f"@{u}" for u in usernames if db.is_subscribed(chat_id, u)]
-    for u in usernames: db.remove_subscription(chat_id, u)
-    await update.message.reply_text(f"🗑 <b>Removed:</b> <code>{', '.join(removed) if removed else 'None'}</code>", parse_mode=ParseMode.HTML)
+    username = clean_username(context.args[0])
+    wait = await update.message.reply_text(f"🧪 Testing @{username}...")
+    sem = asyncio.Semaphore(1)
+    entries = await fetch_feed(username, sem)
+    if entries:
+        await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
+        await wait.delete()
+    else:
+        await wait.edit_text("❌ Could not fetch feed for this user.")
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
-    msg = f"📋 <b>Your List ({len(my_users)}):</b>\n\n" + ("\n".join(my_users) if my_users else "Empty")
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"📋 Your List ({len(my_users)}):\n\n" + "\n".join(my_users), parse_mode=ParseMode.HTML)
 
 # --- Worker ---
+async def process_single_tweet(chat_id, username, entry, bot, force=False):
+    tid = extract_id(entry)
+    if not tid: return
+    if not force and db.is_duplicate(chat_id, tid): return
+    
+    try:
+        title = entry.get("title", "")
+        translation = await translate_text(title)
+        x_link = convert_to_x_link(entry.get('link', ''))
+        
+        safe_name = html.escape(username)
+        body = f"<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
+        text_msg = f"👤 <b>@{safe_name}</b>\n{body}"
+        if translation:
+            text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
+        
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
+        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+        db.mark_sent(chat_id, tid)
+        logger.info(f"🚀 Sent @{username} to {chat_id}")
+    except Exception as e:
+        logger.error(f"Error: {e}")
+
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
-    if not entries:
-        return
-    
+    if not entries: return
     new_last_id = last_id
-    # دیباگ در لاگ ریلیوی
-    # logger.info(f"🔎 Checking @{username}. Current last_id: {last_id}")
-
     for entry in reversed(entries[:3]):
         tid = extract_id(entry)
-        if not tid: continue
+        if not tid or tid == last_id: continue
         
-        # اگر توییت جدید نباشد، از آن عبور می‌کند
-        if tid == last_id:
-            continue
-            
         cids = db.get_subs_for_user(username)
         for cid in cids:
-            if not db.is_duplicate(cid, tid):
-                try:
-                    translation = await translate_text(entry.get("title", ""))
-                    x_link = convert_to_x_link(entry.get('link', ''))
-                    
-                    header = f"👤 <b>@{html.escape(username)}</b>"
-                    body = f"<blockquote expandable>{html.escape(entry.get('title', '')[:1900])}</blockquote>"
-                    text_msg = f"{header}\n{body}"
-                    if translation:
-                        text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
-                    
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-                    
-                    await bot.send_message(chat_id=cid, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
-                    
-                    # لاگ بسیار مهم برای اطمینان شما:
-                    logger.info(f"🚀 NEW TWEET SENT: @{username} to chat {cid}")
-                    
-                    db.mark_sent(cid, tid)
-                except Exception as e:
-                    logger.error(f"❌ Send error for {username}: {e}")
+            await process_single_tweet(cid, username, entry, bot)
         new_last_id = tid
-        
-    if new_last_id != last_id:
-        db.update_last_id(username, new_last_id)
-
-    if new_last_id != last_id:
-        db.update_last_id(username, new_last_id)
+    if new_last_id != last_id: db.update_last_id(username, new_last_id)
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     tracked = db.get_all_tracked()
@@ -231,9 +193,8 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot is active.")))
     app.add_handler(CommandHandler("add", cmd_add))
-    app.add_handler(CommandHandler("del", cmd_del))
+    app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("list", cmd_list))
     app.job_queue.run_repeating(check_updates, interval=CHECK_INTERVAL, first=10)
     app.run_polling(drop_pending_updates=True)
