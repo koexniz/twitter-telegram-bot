@@ -117,24 +117,23 @@ async def translate_text(text: str) -> str:
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
-        await asyncio.sleep(random.uniform(2, 4)) # افزایش تاخیر برای احتیاط بیشتر
+        await asyncio.sleep(random.uniform(1, 2))
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url)
                     
-                    # اگر سایت ما را مسدود کرده بود یا ریدایرکت کرد به جای اشتباه، برو سورس بعدی
-                    if resp.status_code != 200 or "google.com" in str(resp.url):
+                    # Skip invalid responses, ad-redirects, or google error pages
+                    if resp.status_code != 200 or "uni-sonia" in str(resp.url) or "google.com" in str(resp.url):
                         continue
-                        
+                    
                     feed = feedparser.parse(resp.text)
-                    if feed.entries:
+                    if feed.entries: 
                         logger.info(f"✅ Success: @{username} from {url}")
                         return feed.entries
-            except:
+            except: 
                 continue
         return []
 
