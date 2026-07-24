@@ -19,10 +19,10 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 CONCURRENT_LIMIT = 8
 
-# --- Requesty AI Config ---
+# Requesty AI Config
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
 REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://router.requesty.ai/v1").strip().rstrip('/')
-REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "nemotron-3-ultra-550b-a55b").strip()
+REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "tencent/hy3").strip()
 TRANSLATE_FA = os.getenv("TRANSLATE_FA", "true").lower() in ("1", "true", "yes")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -30,22 +30,21 @@ logger = logging.getLogger(__name__)
 
 db = Database()
 
+# Optimized RSS Sources
 RSS_SOURCES = [
+    "https://xcancel.com/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.no-logs.com/{username}/rss",
-    "https://nitter.uni-sonia.com/{username}/rss",
-    "https://nitter.rawbit.ninja/{username}/rss",
     "https://nitter.perennialte.ch/{username}/rss",
-    "https://rsshub.rssforever.com/twitter/user/{username}", # جایگزین پایدارتر برای rsshub.app
-    "https://xcancel.com/{username}/rss"
+    "https://nitter.no-logs.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}"
 ]
 
 # --- Helpers ---
 def clean_username(raw: str) -> str:
     raw = (raw or "").strip()
     raw = raw.replace("https://", "").replace("http://", "")
-    for domain in ["x.com/", "twitter.com/", "nitter.net/", "xcancel.com/"]:
-        raw = raw.replace(domain, "")
+    for d in ["x.com/", "twitter.com/", "nitter.net/", "xcancel.com/", "uni-sonia.com/"]:
+        raw = raw.replace(d, "")
     return raw.lstrip("@").split("?")[0].split("/")[0].lower().strip()
 
 def is_valid_twitter(username: str) -> bool:
@@ -62,13 +61,11 @@ def extract_id(entry):
 def convert_to_x_link(link: str) -> str:
     if not link: return ""
     link = link.split('#')[0]
-    rss_domains = ["nitter.net", "nitter.privacydev.net", "nitter.poast.org", "nitter.no-logs.com", "nitter.perennialte.ch", "xcancel.com", "twitter.com"]
-    for domain in rss_domains:
-        if domain in link:
-            return link.replace(domain, "x.com")
-    if "rsshub.app" in link:
-        m = re.search(r"status/(\d+)", link)
-        if m: return f"https://x.com/i/status/{m.group(1)}"
+    domains = ["nitter", "xcancel", "twitter", "rsshub"]
+    for d in domains:
+        if d in link:
+            m = re.search(r"status/(\d+)", link)
+            if m: return f"https://x.com/i/status/{m.group(1)}"
     return link
 
 def persian_ratio(text: str) -> float:
@@ -82,39 +79,23 @@ async def translate_text(text: str) -> str:
     
     if REQUESTY_API_KEY:
         try:
-            # اصلاح خودکار آدرس اگر v1 فراموش شده باشد
-            base_url = REQUESTY_BASE_URL.strip().rstrip('/')
-            if not base_url.endswith('/v1'):
-                base_url += '/v1'
-            
-            full_url = f"{base_url}/chat/completions"
-            prompt = f"Translate this tweet to colloquial Persian (Tehran dialect). Keep crypto terms (Airdrop, Mainnet, etc.) in English.\n\nText: {text}"
+            # Fix Base URL for Requesty (Ensure /v1/chat/completions)
+            base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
+            full_url = f"{base}/chat/completions"
             
             payload = {
                 "model": REQUESTY_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": f"Translate to colloquial Persian. Keep crypto terms English: {text[:1000]}"}],
                 "temperature": 0.2
             }
-            
-            headers = {
-                "Authorization": f"Bearer {REQUESTY_API_KEY}",
-                "Content-Type": "application/json"
-            }
-
             async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-                resp = await client.post(full_url, headers=headers, json=payload)
-                
+                resp = await client.post(full_url, headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
                 else:
-                    # --- این بخش برای دیباگ است ---
-                    # در لاگ ریلیوی به دنبال "AI Debug Error" بگرد و متنش را برای من بفرست
-                    error_detail = resp.text
-                    logger.warning(f"⚠️ AI Debug Error: {resp.status_code} - {error_detail}")
-        except Exception as e:
-            logger.warning(f"⚠️ Requesty Connection failed: {e}")
+                    logger.warning(f"AI Error: {resp.status_code}")
+        except: pass
 
-    # Fallback to Google
     try:
         from deep_translator import GoogleTranslator
         return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1500])
@@ -122,24 +103,21 @@ async def translate_text(text: str) -> str:
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
-        await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.sleep(random.uniform(1.5, 3))
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
                 async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url)
-                    
-                    # Skip invalid responses, ad-redirects, or google error pages
+                    # Filter out Ads and non-200 responses
                     if resp.status_code != 200 or "uni-sonia" in str(resp.url) or "google.com" in str(resp.url):
                         continue
-                    
                     feed = feedparser.parse(resp.text)
-                    if feed.entries: 
-                        logger.info(f"✅ Success: @{username} from {url}")
+                    if feed.entries:
+                        logger.info(f"✅ Success: @{username}")
                         return feed.entries
-            except: 
-                continue
+            except: continue
         return []
 
 async def fetch_feed_task(username, semaphore):
@@ -149,12 +127,12 @@ async def fetch_feed_task(username, semaphore):
 # --- Handlers ---
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ مثال: <code>/add user1 user2</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ Example: <code>/add user1 user2</code>", parse_mode=ParseMode.HTML)
         return
     raw_input = " ".join(context.args)
     all_usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
     chat_id = str(update.effective_chat.id)
-    wait_msg = await update.message.reply_text(f"⏳ در حال پردازش {len(all_usernames)} اکانت...")
+    wait_msg = await update.message.reply_text(f"⏳ Processing {len(all_usernames)} accounts...")
     
     added, added_warn, skipped, failed = [], [], [], []
     batch_size = 10
@@ -174,33 +152,29 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else: added_warn.append(f"@{u}")
     
     await wait_msg.delete()
-    res = "✅ <b>گزارش:</b>\n\n"
-    if added: await update.message.reply_text(f"🔹 اضافه شد: <code>{', '.join(added)}</code>", parse_mode=ParseMode.HTML)
-    if added_warn: await update.message.reply_text(f"⚠️ اضافه شد (فید قطع): <code>{', '.join(added_warn)}</code>", parse_mode=ParseMode.HTML)
-    if skipped: await update.message.reply_text(f"🔸 قبلاً بود: <code>{', '.join(skipped)}</code>", parse_mode=ParseMode.HTML)
-    if failed: await update.message.reply_text(f"❌ نامعتبر: <code>{', '.join(failed)}</code>", parse_mode=ParseMode.HTML)
+    if added: await update.message.reply_text(f"🔹 Added: <code>{', '.join(added)}</code>", parse_mode=ParseMode.HTML)
+    if added_warn: await update.message.reply_text(f"⚠️ Added (Feed Down): <code>{', '.join(added_warn)}</code>", parse_mode=ParseMode.HTML)
+    if skipped: await update.message.reply_text(f"🔸 Already exist: <code>{', '.join(skipped)}</code>", parse_mode=ParseMode.HTML)
+    if failed: await update.message.reply_text(f"❌ Invalid: <code>{', '.join(failed)}</code>", parse_mode=ParseMode.HTML)
 
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ مثال: <code>/del user1 user2</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ Example: <code>/del user1 user2</code>", parse_mode=ParseMode.HTML)
         return
     raw_input = " ".join(context.args)
     usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
     chat_id = str(update.effective_chat.id)
-    removed = []
-    for u in usernames:
-        if db.is_subscribed(chat_id, u):
-            db.remove_subscription(chat_id, u)
-            removed.append(f"@{u}")
-    await update.message.reply_text(f"🗑 <b>حذف شد:</b> <code>{', '.join(removed) if removed else 'موردی یافت نشد'}</code>", parse_mode=ParseMode.HTML)
+    removed = [f"@{u}" for u in usernames if db.is_subscribed(chat_id, u)]
+    for u in usernames: db.remove_subscription(chat_id, u)
+    await update.message.reply_text(f"🗑 <b>Removed:</b> <code>{', '.join(removed) if removed else 'None'}</code>", parse_mode=ParseMode.HTML)
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
-    msg = f"📋 <b>لیست شما ({len(my_users)}):</b>\n\n" + ("\n".join(my_users) if my_users else "خالی")
+    msg = f"📋 <b>Your List ({len(my_users)}):</b>\n\n" + ("\n".join(my_users) if my_users else "Empty")
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
-# --- Background Worker ---
+# --- Worker ---
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
     if not entries: return
@@ -208,48 +182,22 @@ async def process_user(username, last_id, sem, bot):
     for entry in reversed(entries[:3]):
         tid = extract_id(entry)
         if not tid or tid == last_id: continue
-        
-        raw_title = entry.get("title", "")
-        # افزایش سقف کاراکتر به 1900 برای متن اصلی
-        title = (raw_title[:1900] + '...') if len(raw_title) > 1900 else raw_title
-        
+        title = entry.get("title", "")
         translation = await translate_text(title)
         x_link = convert_to_x_link(entry.get('link', ''))
-        
         cids = db.get_subs_for_user(username)
         for cid in cids:
             if not db.is_duplicate(cid, tid):
                 try:
-                    safe_name = html.escape(username)
-                    safe_title = html.escape(title)
-                    
-                    header = f"👤 <b>@{safe_name}</b>"
-                    
-                    # استفاده از blockquote با قابلیت expandable (برای متن‌های طولانی)
-                    if len(title) > 150:
-                        body = f"<blockquote expandable>{safe_title}</blockquote>"
-                    else:
-                        body = f"\n<b>{safe_title}</b>"
-                    
+                    header = f"👤 <b>@{html.escape(username)}</b>"
+                    body = f"<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
                     text_msg = f"{header}\n{body}"
-                    
                     if translation:
-                        # افزایش سقف کاراکتر ترجمه به 1900
-                        safe_trans = html.escape(translation[:1900])
-                        text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>ترجمه:</b>\n<blockquote expandable><i>{safe_trans}</i></blockquote>"
-                    
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 مشاهده در X", url=x_link)]])
-                    
-                    await bot.send_message(
-                        chat_id=cid, 
-                        text=text_msg, 
-                        reply_markup=kb, 
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=False
-                    )
+                        text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
+                    await bot.send_message(chat_id=cid, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
                     db.mark_sent(cid, tid)
-                except Exception as e:
-                    logger.error(f"Telegram Send Error for {username}: {e}")
+                except: pass
         new_last_id = tid
     if new_last_id != last_id: db.update_last_id(username, new_last_id)
 
@@ -261,7 +209,7 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 ربات فعال شد.")))
+    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot is active.")))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("list", cmd_list))
