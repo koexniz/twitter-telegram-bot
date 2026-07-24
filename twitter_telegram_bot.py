@@ -80,17 +80,10 @@ async def translate_text(text: str) -> str:
     if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
         return ""
     
-    # AI Translation via Requesty
     if REQUESTY_API_KEY:
         try:
             full_url = f"{REQUESTY_BASE_URL}/chat/completions"
-            
-            # پرومپت حرفه‌ای برای مدل‌های سنگین مثل Nemotron
-            prompt = (
-                "You are an expert crypto translator. Translate this tweet into professional yet colloquial Persian (Tehran dialect). "
-                "Keep these terms in English: Airdrop, Mainnet, Testnet, Mint, Staking, Claim, Listing, Wallet, Swap, L1, L2, TVL.\n\n"
-                f"Tweet: {text}"
-            )
+            prompt = f"Translate this tweet to colloquial Persian (Tehran dialect). Keep crypto terms (Airdrop, Mainnet, etc.) in English.\n\nText: {text}"
             
             payload = {
                 "model": REQUESTY_MODEL,
@@ -103,25 +96,24 @@ async def translate_text(text: str) -> str:
                 "Content-Type": "application/json"
             }
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
                 resp = await client.post(full_url, headers=headers, json=payload)
                 
                 if resp.status_code == 200:
-                    result = resp.json()
-                    return result["choices"][0]["message"]["content"].strip()
+                    return resp.json()["choices"][0]["message"]["content"].strip()
                 else:
-                    logger.warning(f"⚠️ Requesty AI Error: {resp.status_code}")
+                    # --- این بخش برای دیباگ است ---
+                    # در لاگ ریلیوی به دنبال "AI Debug Error" بگرد و متنش را برای من بفرست
+                    error_detail = resp.text
+                    logger.warning(f"⚠️ AI Debug Error: {resp.status_code} - {error_detail}")
         except Exception as e:
             logger.warning(f"⚠️ Requesty Connection failed: {e}")
 
-    # Fallback to Google Translate
+    # Fallback to Google
     try:
         from deep_translator import GoogleTranslator
-        safe_text = text[:1500] 
-        return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, safe_text)
-    except Exception as e:
-        logger.warning(f"⚠️ Google Fallback failed: {e}")
-        return ""
+        return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1500])
+    except: return ""
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
