@@ -177,29 +177,51 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Worker ---
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
-    if not entries: return
+    if not entries:
+        # logger.info(f"Empty feed for @{username}") # فعال کردن این خط لاگ را شلوغ میکند
+        return
+    
     new_last_id = last_id
+    found_new = False
+    
     for entry in reversed(entries[:3]):
         tid = extract_id(entry)
-        if not tid or tid == last_id: continue
-        title = entry.get("title", "")
-        translation = await translate_text(title)
+        
+        # لاگ برای دیباگ:
+        if not tid:
+            continue
+            
+        if tid == last_id:
+            # این توییت دقیقاً همان آخرین توییتی است که قبلاً خوانده شده
+            continue
+
+        translation = await translate_text(entry.get("title", ""))
         x_link = convert_to_x_link(entry.get('link', ''))
         cids = db.get_subs_for_user(username)
+        
         for cid in cids:
             if not db.is_duplicate(cid, tid):
                 try:
                     header = f"👤 <b>@{html.escape(username)}</b>"
-                    body = f"<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
+                    body = f"<blockquote expandable>{html.escape(entry.get('title', '')[:1900])}</blockquote>"
                     text_msg = f"{header}\n{body}"
                     if translation:
                         text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
+                    
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-                    await bot.send_message(chat_id=cid, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
-                    db.mark_sent(cid, tid)
-                except: pass
+                    
+                    sent = await bot.send_message(chat_id=cid, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+                    if sent:
+                        logger.info(f"✈️ Message sent to {cid} for @{username} (Tweet ID: {tid})")
+                        db.mark_sent(cid, tid)
+                        found_new = True
+                except Exception as e:
+                    logger.error(f"❌ Telegram Error for {username}: {e}")
+        
         new_last_id = tid
-    if new_last_id != last_id: db.update_last_id(username, new_last_id)
+
+    if new_last_id != last_id:
+        db.update_last_id(username, new_last_id)
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     tracked = db.get_all_tracked()
