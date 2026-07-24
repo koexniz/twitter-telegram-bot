@@ -204,22 +204,48 @@ async def process_user(username, last_id, sem, bot):
     for entry in reversed(entries[:3]):
         tid = extract_id(entry)
         if not tid or tid == last_id: continue
-        title = entry.get("title", "")
+        
+        raw_title = entry.get("title", "")
+        # افزایش سقف کاراکتر به 1900 برای متن اصلی
+        title = (raw_title[:1900] + '...') if len(raw_title) > 1900 else raw_title
+        
         translation = await translate_text(title)
         x_link = convert_to_x_link(entry.get('link', ''))
+        
         cids = db.get_subs_for_user(username)
         for cid in cids:
             if not db.is_duplicate(cid, tid):
                 try:
-                    header = f"👤 <b>@{html.escape(username)}</b>"
-                    body = f"<blockquote>{html.escape(title)}</blockquote>" if len(title) > 100 else f"\n<b>{html.escape(title)}</b>"
-                    text = f"{header}\n{body}"
+                    safe_name = html.escape(username)
+                    safe_title = html.escape(title)
+                    
+                    header = f"👤 <b>@{safe_name}</b>"
+                    
+                    # استفاده از blockquote با قابلیت expandable (برای متن‌های طولانی)
+                    if len(title) > 150:
+                        body = f"<blockquote expandable>{safe_title}</blockquote>"
+                    else:
+                        body = f"\n<b>{safe_title}</b>"
+                    
+                    text_msg = f"{header}\n{body}"
+                    
                     if translation:
-                        text += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>ترجمه:</b>\n<blockquote><i>{html.escape(translation)}</i></blockquote>"
+                        # افزایش سقف کاراکتر ترجمه به 1900
+                        safe_trans = html.escape(translation[:1900])
+                        text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>ترجمه:</b>\n<blockquote expandable><i>{safe_trans}</i></blockquote>"
+                    
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 مشاهده در X", url=x_link)]])
-                    await bot.send_message(chat_id=cid, text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                    
+                    await bot.send_message(
+                        chat_id=cid, 
+                        text=text_msg, 
+                        reply_markup=kb, 
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=False
+                    )
                     db.mark_sent(cid, tid)
-                except: pass
+                except Exception as e:
+                    logger.error(f"Telegram Send Error for {username}: {e}")
         new_last_id = tid
     if new_last_id != last_id: db.update_last_id(username, new_last_id)
 
