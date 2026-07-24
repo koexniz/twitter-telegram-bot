@@ -82,7 +82,12 @@ async def translate_text(text: str) -> str:
     
     if REQUESTY_API_KEY:
         try:
-            full_url = f"{REQUESTY_BASE_URL}/chat/completions"
+            # اصلاح خودکار آدرس اگر v1 فراموش شده باشد
+            base_url = REQUESTY_BASE_URL.strip().rstrip('/')
+            if not base_url.endswith('/v1'):
+                base_url += '/v1'
+            
+            full_url = f"{base_url}/chat/completions"
             prompt = f"Translate this tweet to colloquial Persian (Tehran dialect). Keep crypto terms (Airdrop, Mainnet, etc.) in English.\n\nText: {text}"
             
             payload = {
