@@ -39,6 +39,32 @@ RSS_SOURCES = [
 ]
 
 # --- Helpers ---
+def convert_to_x_link(link: str) -> str:
+    """تبدیل لینک‌های RSS و Nitter به لینک مستقیم X.com"""
+    if not link: return ""
+    # حذف بخش‌های اضافی انتهای لینک مثل #m
+    link = link.split('#')[0]
+    
+    # لیست دامنه‌هایی که باید به x.com تبدیل شوند
+    rss_domains = [
+        "nitter.net", "nitter.privacydev.net", "nitter.poast.org", 
+        "nitter.moomoo.me", "nitter.no-logs.com", "nitter.projectsegfau.lt",
+        "nitter.ca", "nitter.rawbit.ninja", "xcancel.com", "twitter.com"
+    ]
+    
+    for domain in rss_domains:
+        if domain in link:
+            link = link.replace(domain, "x.com")
+            break
+            
+    # اگر از RSSHub استفاده شده باشد، ساختار لینک متفاوت است
+    if "rsshub.app" in link:
+        # استخراج آیدی وضعیت از لینک‌های خاص RSSHub در صورت وجود
+        m = re.search(r"status/(\d+)", link)
+        if m:
+            return f"https://x.com/i/status/{m.group(1)}"
+            
+    return link
 def clean_username(raw: str) -> str:
     raw = (raw or "").strip()
     raw = raw.replace("https://", "").replace("http://", "")
@@ -196,6 +222,10 @@ async def process_user(username, last_id, sem, bot):
         title = entry.get("title", "")
         translation = await translate_text(title)
         
+        # --- اصلاح لینک در اینجا ---
+        raw_link = entry.get('link', '')
+        x_link = convert_to_x_link(raw_link)
+        
         cids = db.get_subs_for_user(username)
         for cid in cids:
             if not db.is_duplicate(cid, tid):
@@ -203,11 +233,7 @@ async def process_user(username, last_id, sem, bot):
                     safe_name = html.escape(username)
                     safe_title = html.escape(title)
                     
-                    # --- طراحی جدید و چشم‌نواز ---
-                    # سربرگ با استایل حرفه‌ای
                     header = f"👤 <b>@{safe_name}</b>"
-                    
-                    # بدنه اصلی توییت (اگر طولانی باشد در بلوک قرار می‌گیرد)
                     if len(title) > 120:
                         body = f"<blockquote>{safe_title}</blockquote>"
                     else:
@@ -215,16 +241,14 @@ async def process_user(username, last_id, sem, bot):
                     
                     text = f"{header}\n{body}"
 
-                    # بخش ترجمه با ظاهری متمایز
                     if translation:
-                        # استفاده از یک خط جداکننده ظریف
                         divider = "\n" + "⎯" * 15 + "\n"
                         text += f"{divider}🇮🇷 <b>ترجمه اختصاصی:</b>\n"
                         text += f"<blockquote><i>{html.escape(translation)}</i></blockquote>"
                     
-                    # دکمه شیشه‌ای با متن بهتر
+                    # استفاده از x_link برای دکمه
                     kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔗 مشاهده توییت اصلی", url=entry.get('link'))
+                        InlineKeyboardButton("🔗 مشاهده توییت اصلی (X)", url=x_link)
                     ]])
                     
                     await bot.send_message(
@@ -232,7 +256,7 @@ async def process_user(username, last_id, sem, bot):
                         text=text, 
                         reply_markup=kb, 
                         parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=False # نمایش پیش‌نمایش عکس توییت
+                        disable_web_page_preview=False
                     )
                     db.mark_sent(cid, tid)
                 except Exception as e:
