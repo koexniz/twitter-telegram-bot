@@ -77,11 +77,15 @@ def persian_ratio(text: str) -> float:
 async def translate_text(text: str) -> str:
     if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
         return ""
+    
+    # تست Aerolink
     if AEROLINK_API_KEY and AEROLINK_BASE_URL:
         try:
-            full_url = f"{AEROLINK_BASE_URL}/chat/completions"
-            prompt = f"Translate this tweet to colloquial Persian (Tehran dialect). Keep crypto terms (Airdrop, Mainnet, etc.) in English.\n\nText: {text}"
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            base_url = AEROLINK_BASE_URL.strip().rstrip('/')
+            full_url = f"{base_url}/chat/completions"
+            prompt = f"Translate to colloquial Persian (Tehran dialect). Keep crypto terms English.\n\nText: {text}"
+            
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 resp = await client.post(
                     full_url,
                     headers={"Authorization": f"Bearer {AEROLINK_API_KEY}"},
@@ -89,11 +93,25 @@ async def translate_text(text: str) -> str:
                 )
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
-        except: pass
+                else:
+                    # اینجا در لاگ می‌نویسد که چرا AI کار نکرد
+                    logger.warning(f"⚠️ AI Engine Failed (Status: {resp.status_code}). Switching to Google...")
+        except Exception as e:
+            logger.warning(f"⚠️ AI Connection Error: {e}")
+
+    # جایگزین: Google Translate (بدون نیاز به اعتبار)
     try:
         from deep_translator import GoogleTranslator
-        return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text)
-    except: return ""
+        # محدود کردن متن برای جلوگیری از خطای گوگل
+        safe_text = text[:1000]
+        result = await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, safe_text)
+        if result:
+            logger.info("✅ Translation done via Google Translate")
+            return result
+    except Exception as e:
+        logger.error(f"❌ Both Translation Engines failed: {e}")
+    
+    return ""
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
