@@ -93,28 +93,44 @@ async def translate_text(text: str) -> str:
         return ""
     
     # AI Translation
+    async def translate_text(text: str) -> str:
+    if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
+        return ""
+    
+    # AI Translation (Aerolink)
     if AEROLINK_API_KEY and AEROLINK_BASE_URL:
         try:
+            # پاکسازی آدرس برای جلوگیری از خطای 301
+            base_url = AEROLINK_BASE_URL.strip().rstrip('/')
+            full_url = f"{base_url}/chat/completions"
+            
             prompt = (
                 "Translate this English tweet to colloquial Persian (informal Tehran dialect). "
                 "Keep these terms EXACTLY in English: Airdrop, Mainnet, Testnet, Mint, Staking, Claim, Listing, Wallet, Swap, L1, L2.\n\n"
                 f"Text: {text}"
             )
-            async with httpx.AsyncClient(timeout=20) as client:
+            
+            # اضافه کردن follow_redirects=True برای رفع خطای 301
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
                 resp = await client.post(
-                    f"{AEROLINK_BASE_URL}/chat/completions",
+                    full_url,
                     headers={"Authorization": f"Bearer {AEROLINK_API_KEY}"},
                     json={"model": AEROLINK_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
                 )
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
-        except: pass
+                else:
+                    logger.warning(f"AI API Error: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"AI Translation failed: {e}")
 
-    # Google Fallback
+    # Google Fallback (اگر هوش مصنوعی جواب نداد)
     try:
         from deep_translator import GoogleTranslator
         return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text)
-    except: return ""
+    except Exception as e:
+        logger.warning(f"Google Fallback failed: {e}")
+        return ""
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
