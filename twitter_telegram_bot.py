@@ -32,10 +32,12 @@ db = Database()
 
 RSS_SOURCES = [
     "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.net/{username}/rss",
     "https://nitter.no-logs.com/{username}/rss",
+    "https://nitter.uni-sonia.com/{username}/rss",
+    "https://nitter.rawbit.ninja/{username}/rss",
     "https://nitter.perennialte.ch/{username}/rss",
-    "https://rsshub.app/twitter/user/{username}"
+    "https://rsshub.rssforever.com/twitter/user/{username}", # جایگزین پایدارتر برای rsshub.app
+    "https://xcancel.com/{username}/rss"
 ]
 
 # --- Helpers ---
@@ -115,17 +117,25 @@ async def translate_text(text: str) -> str:
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
-        await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.sleep(random.uniform(2, 4)) # افزایش تاخیر برای احتیاط بیشتر
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=10, headers=headers) as client:
-                    resp = await client.get(url, follow_redirects=True)
-                    if resp.status_code == 200:
-                        feed = feedparser.parse(resp.text)
-                        if feed.entries: return feed.entries
-            except: continue
+                async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
+                    resp = await client.get(url)
+                    
+                    # اگر سایت ما را مسدود کرده بود یا ریدایرکت کرد به جای اشتباه، برو سورس بعدی
+                    if resp.status_code != 200 or "google.com" in str(resp.url):
+                        continue
+                        
+                    feed = feedparser.parse(resp.text)
+                    if feed.entries:
+                        logger.info(f"✅ Success: @{username} from {url}")
+                        return feed.entries
+            except:
+                continue
         return []
 
 async def fetch_feed_task(username, semaphore):
