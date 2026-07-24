@@ -19,10 +19,10 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 CONCURRENT_LIMIT = 8
 
-# Translation Config
-AEROLINK_API_KEY = os.getenv("AEROLINK_API_KEY", "").strip()
-AEROLINK_BASE_URL = os.getenv("AEROLINK_BASE_URL", "").rstrip("/")
-AEROLINK_MODEL = os.getenv("AEROLINK_MODEL", "gpt-4o-mini").strip()
+# --- Requesty AI Config ---
+REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
+REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://router.requesty.ai/v1").strip().rstrip('/')
+REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "nemotron-3-ultra-550b-a55b").strip()
 TRANSLATE_FA = os.getenv("TRANSLATE_FA", "true").lower() in ("1", "true", "yes")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -80,40 +80,48 @@ async def translate_text(text: str) -> str:
     if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
         return ""
     
-    # تست Aerolink
-    if AEROLINK_API_KEY and AEROLINK_BASE_URL:
+    # AI Translation via Requesty
+    if REQUESTY_API_KEY:
         try:
-            base_url = AEROLINK_BASE_URL.strip().rstrip('/')
-            full_url = f"{base_url}/chat/completions"
-            prompt = f"Translate to colloquial Persian (Tehran dialect). Keep crypto terms English.\n\nText: {text}"
+            full_url = f"{REQUESTY_BASE_URL}/chat/completions"
             
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                resp = await client.post(
-                    full_url,
-                    headers={"Authorization": f"Bearer {AEROLINK_API_KEY}"},
-                    json={"model": AEROLINK_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
-                )
-                if resp.status_code == 200:
-                    return resp.json()["choices"][0]["message"]["content"].strip()
-                else:
-                    # اینجا در لاگ می‌نویسد که چرا AI کار نکرد
-                    logger.warning(f"⚠️ AI Engine Failed (Status: {resp.status_code}). Switching to Google...")
-        except Exception as e:
-            logger.warning(f"⚠️ AI Connection Error: {e}")
+            # پرومپت حرفه‌ای برای مدل‌های سنگین مثل Nemotron
+            prompt = (
+                "You are an expert crypto translator. Translate this tweet into professional yet colloquial Persian (Tehran dialect). "
+                "Keep these terms in English: Airdrop, Mainnet, Testnet, Mint, Staking, Claim, Listing, Wallet, Swap, L1, L2, TVL.\n\n"
+                f"Tweet: {text}"
+            )
+            
+            payload = {
+                "model": REQUESTY_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2
+            }
+            
+            headers = {
+                "Authorization": f"Bearer {REQUESTY_API_KEY}",
+                "Content-Type": "application/json"
+            }
 
-    # جایگزین: Google Translate (بدون نیاز به اعتبار)
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(full_url, headers=headers, json=payload)
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    return result["choices"][0]["message"]["content"].strip()
+                else:
+                    logger.warning(f"⚠️ Requesty AI Error: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Requesty Connection failed: {e}")
+
+    # Fallback to Google Translate
     try:
         from deep_translator import GoogleTranslator
-        # محدود کردن متن برای جلوگیری از خطای گوگل
-        safe_text = text[:1000]
-        result = await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, safe_text)
-        if result:
-            logger.info("✅ Translation done via Google Translate")
-            return result
+        safe_text = text[:1500] 
+        return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, safe_text)
     except Exception as e:
-        logger.error(f"❌ Both Translation Engines failed: {e}")
-    
-    return ""
+        logger.warning(f"⚠️ Google Fallback failed: {e}")
+        return ""
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
