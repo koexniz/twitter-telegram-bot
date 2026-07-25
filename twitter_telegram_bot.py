@@ -19,7 +19,7 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 CONCURRENT_LIMIT = 5
 
-# AI Config
+# AI Config (DeepSeek / 17.wtf)
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
 REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.17.wtf/v1").strip().rstrip('/')
 REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "posiden/deepseek-v4-flash").strip()
@@ -34,7 +34,7 @@ RSS_SOURCES = [
     "https://xcancel.com/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
     "https://nitter.perennialte.ch/{username}/rss",
-    "https://nitter.no-logs.com/{username}/rss",
+    "https://nitter.net/{username}/rss",
     "https://rsshub.rssforever.com/twitter/user/{username}"
 ]
 
@@ -62,11 +62,20 @@ def extract_id(entry):
     return None
 
 def extract_image_url(entry):
-    desc = entry.get('description', '')
-    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc)
-    if img_match: return img_match.group(1)
-    if 'media_content' in entry and entry.media_content:
-        return entry.media_content[0]['url']
+    """Enhanced image extraction for various RSS formats"""
+    # 1. Check enclosures
+    for enc in entry.get('enclosures', []):
+        if enc.get('type', '').startswith('image/') or re.search(r'\.(jpg|jpeg|png|webp)', enc.get('href', ''), re.I):
+            return enc.get('href')
+    # 2. Check media_content
+    media_list = entry.get('media_content', [])
+    if media_list and 'url' in media_list[0]:
+        return media_list[0]['url']
+    # 3. Check HTML description for <img> tags
+    desc = entry.get('description', '') or entry.get('summary', '')
+    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc, re.I)
+    if img_match:
+        return img_match.group(1)
     return None
 
 def convert_to_x_link(link: str, tid: str = None) -> str:
@@ -86,20 +95,20 @@ async def translate_text(text: str) -> str:
             base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
             payload = {
                 "model": REQUESTY_MODEL,
-                "messages": [{"role": "user", "content": f"Translate to colloquial Persian. Keep crypto terms English: {text[:1000]}"}],
+                "messages": [{"role": "user", "content": f"Translate this tweet to colloquial Persian. Keep crypto terms English: {text[:1000]}"}],
                 "temperature": 0.2
             }
             async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
                 resp = await client.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
-        except Exception:
-            pass
+                else:
+                    logger.warning(f"AI API Error: {resp.status_code}")
+        except Exception: pass
     try:
         from deep_translator import GoogleTranslator
         return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1500])
-    except Exception:
-        return ""
+    except Exception: return ""
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
@@ -117,8 +126,7 @@ async def fetch_feed(username, semaphore):
                     if real_entries:
                         logger.info(f"✅ Success: @{username}")
                         return real_entries
-            except Exception:
-                continue
+            except Exception: continue
         return []
 
 # --- Handlers ---
@@ -135,17 +143,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             added.append(f"@{u}")
     await wait_msg.edit_text(f"🔹 Added: {', '.join(added) if added else 'None'}")
 
-async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
-    username = clean_username(context.args[0])
-    wait = await update.message.reply_text(f"🧪 Testing @{username}...")
-    entries = await fetch_feed(username, asyncio.Semaphore(1))
-    if entries:
-        await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
-        await wait.delete()
-    else:
-        await wait.edit_text("❌ No valid tweets found.")
-
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
     raw_input = " ".join(context.args)
@@ -161,7 +158,18 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"📋 Your Tracking List ({len(my_users)}):\n\n" + ("\n".join(my_users) if my_users else "Empty")
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
-# --- Worker ---
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args: return
+    username = clean_username(context.args[0])
+    wait = await update.message.reply_text(f"🧪 Testing @{username} with media detection...")
+    entries = await fetch_feed(username, asyncio.Semaphore(1))
+    if entries:
+        await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
+        await wait.delete()
+    else:
+        await wait.edit_text("❌ No valid tweets found.")
+
+# --- Engine ---
 async def process_single_tweet(chat_id, username, entry, bot, force=False):
     tid = extract_id(entry)
     if not tid or (not force and db.is_duplicate(chat_id, tid)): return
@@ -169,20 +177,24 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         title = entry.get("title", "")
         translation = await translate_text(title)
         img_url = extract_image_url(entry)
+        
+        # Invisible link trick for image display
         hidden_img = f'<a href="{img_url}">&#8205;</a>' if img_url else ""
         x_link = convert_to_x_link(entry.get('link', ''), tid)
         
         safe_name = html.escape(username)
         body = f"<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
         text_msg = f"{hidden_img}👤 <b>@{safe_name}</b>\n{body}"
+        
         if translation:
             text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+        
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
-        logger.info(f"🚀 Sent @{username}")
+        logger.info(f"🚀 Sent @{username} (Image: {'Yes' if img_url else 'No'})")
     except Exception as e:
         logger.error(f"❌ Send Error: {e}")
 
@@ -207,6 +219,7 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot Active.")))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("list", cmd_list))
