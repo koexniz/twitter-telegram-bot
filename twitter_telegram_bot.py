@@ -14,15 +14,15 @@ from database import Database
 
 load_dotenv()
 
-# --- Config ---
+# --- Configuration ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 CONCURRENT_LIMIT = 5
 
-# AI Config
+# AI Config (Optimized for Groq/OpenRouter)
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
-REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.17.wtf/v1").strip().rstrip('/')
-REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "posiden/deepseek-v4-flash").strip()
+REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip('/')
+REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "llama-3.3-70b-versatile").strip()
 TRANSLATE_FA = os.getenv("TRANSLATE_FA", "true").lower() in ("1", "true", "yes")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -79,9 +79,14 @@ async def translate_text(text: str) -> str:
     if REQUESTY_API_KEY:
         try:
             base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
-            payload = {"model": REQUESTY_MODEL, "messages": [{"role": "user", "content": f"Translate to colloquial Persian. Keep crypto terms English: {text[:1000]}"}], "temperature": 0.2}
+            full_url = f"{base}/chat/completions"
+            payload = {
+                "model": REQUESTY_MODEL,
+                "messages": [{"role": "user", "content": f"Translate this tweet to colloquial Persian (Tehran dialect). Keep crypto terms (Airdrop, Mainnet, etc.) in English: {text[:1000]}"}],
+                "temperature": 0.2
+            }
             async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-                resp = await client.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
+                resp = await client.post(full_url, headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
         except: pass
@@ -97,14 +102,12 @@ async def fetch_feed(username, semaphore):
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url)
-                    if resp.status_code != 200 or "uni-sonia" in str(resp.url) or "google.com" in str(resp.url): continue
+                    if resp.status_code != 200 or "google.com" in str(resp.url): continue
                     feed = feedparser.parse(resp.text)
                     real_entries = [e for e in feed.entries if extract_id(e)]
-                    if real_entries:
-                        logger.info(f"✅ Success: @{username}")
-                        return real_entries
+                    if real_entries: return real_entries
             except: continue
         return []
 
@@ -121,6 +124,23 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.add_subscription(chat_id, u, "")
             added.append(f"@{u}")
     await wait.edit_text(f"🔹 Added: {', '.join(added) if added else 'None'}")
+
+async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args: return
+    usernames = [clean_username(arg) for arg in context.args]
+    chat_id = str(update.effective_chat.id)
+    removed = []
+    for u in usernames:
+        if db.is_subscribed(chat_id, u):
+            db.remove_subscription(chat_id, u)
+            removed.append(f"@{u}")
+    await update.message.reply_text(f"🗑 Removed: {', '.join(removed) if removed else 'None'}")
+
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
+    msg = f"📋 Your Tracking List ({len(my_users)}):\n\n" + ("\n".join(my_users) if my_users else "Empty")
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
@@ -141,9 +161,6 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         title = entry.get("title", "")
         translation = await translate_text(title)
         img_url = extract_image_url(entry)
-        
-        # IMAGE TRICK: Using a direct link at the beginning of the message
-        # If the RSS image is blocked, we use a placeholder or skip it
         hidden_img = f'<a href="{img_url}">&#8205;</a>' if img_url else ""
         x_link = convert_to_x_link(tid)
         
@@ -154,10 +171,9 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
             text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
-        logger.info(f"🚀 Sent @{username} to {chat_id}")
     except Exception as e:
         logger.error(f"❌ Send Error: {e}")
 
@@ -182,8 +198,9 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot Active.")))
     app.add_handler(CommandHandler("add", cmd_add))
-    app.add_handler(CommandHandler("del", lambda u,c: [db.remove_subscription(u.effective_chat.id, clean_username(arg)) for arg in c.args]))
+    app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("test", cmd_test))
     app.job_queue.run_repeating(check_updates, interval=CHECK_INTERVAL, first=10)
