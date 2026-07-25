@@ -1,0 +1,15 @@
+{
+  "name": "Twitter Monitor App",
+  "short_name": "TweetApp",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#1da1f2",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/733/733579.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
