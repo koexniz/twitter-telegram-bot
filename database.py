@@ -4,49 +4,33 @@ import time
 
 class Database:
     def __init__(self):
-        # ریلیوی DATABASE_URL یا DATABASE_PUBLIC_URL را خودکار ست می‌کند
         self.db_url = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL")
-        
         if not self.db_url:
-            print("❌ CRITICAL: No Database URL found in environment variables!")
+            print("CRITICAL: No DATABASE_URL found!")
             return
-
         if self.db_url.startswith("postgres://"):
             self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
-
         for i in range(3):
             try:
                 self.conn = psycopg2.connect(self.db_url)
                 self.conn.autocommit = True
-                print("✅ Database connected successfully!")
+                print("Database connected successfully.")
                 break
             except Exception as e:
-                print(f"Database connection attempt {i+1} failed: {e}")
+                print(f"Connection attempt {i+1} failed: {e}")
                 time.sleep(2)
-        else:
-            return
-
+        else: return
         self.create_tables()
 
     def create_tables(self):
         with self.conn.cursor() as cursor:
-            cursor.execute('''CREATE TABLE IF NOT EXISTS tracked_users 
-                              (username TEXT PRIMARY KEY, last_id TEXT)''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS subscriptions 
-                              (chat_id TEXT, username TEXT, PRIMARY KEY(chat_id, username))''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS sent_ids 
-                              (chat_id TEXT, tweet_id TEXT, PRIMARY KEY(chat_id, tweet_id))''')
-            
-           
+            cursor.execute('CREATE TABLE IF NOT EXISTS tracked_users (username TEXT PRIMARY KEY, last_id TEXT)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS subscriptions (chat_id TEXT, username TEXT, PRIMARY KEY(chat_id, username))')
+            cursor.execute('CREATE TABLE IF NOT EXISTS sent_ids (chat_id TEXT, tweet_id TEXT, PRIMARY KEY(chat_id, tweet_id))')
             cursor.execute('''CREATE TABLE IF NOT EXISTS tweets_content (
-                                id SERIAL PRIMARY KEY,
-                                username TEXT,
-                                title TEXT,
-                                translation TEXT,
-                                img_url TEXT,
-                                tweet_link TEXT,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                              )''')
+                                id SERIAL PRIMARY KEY, username TEXT, title TEXT,
+                                translation TEXT, img_url TEXT, tweet_link TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
     def get_all_tracked(self):
         with self.conn.cursor() as cursor:
@@ -87,21 +71,10 @@ class Database:
     def mark_sent(self, chat_id, tweet_id):
         with self.conn.cursor() as cursor:
             cursor.execute("INSERT INTO sent_ids (chat_id, tweet_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (str(chat_id), str(tweet_id)))
+
     def save_tweet_content(self, username, title, translation, img_url, tweet_link):
         with self.conn.cursor() as cursor:
-            # Create table if not exists for the APP
-            cursor.execute('''CREATE TABLE IF NOT EXISTS tweets_content (
-                                id SERIAL PRIMARY KEY,
-                                username TEXT,
-                                title TEXT,
-                                translation TEXT,
-                                img_url TEXT,
-                                tweet_link TEXT,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                              )''')
-            cursor.execute('''INSERT INTO tweets_content (username, title, translation, img_url, tweet_link) 
-                              VALUES (%s, %s, %s, %s, %s)''', 
-                           (username, title, translation, img_url, tweet_link))
+            cursor.execute("INSERT INTO tweets_content (username, title, translation, img_url, tweet_link) VALUES (%s, %s, %s, %s, %s)", (username, title, translation, img_url, tweet_link))
 
     def get_latest_tweets(self, limit=20):
         with self.conn.cursor() as cursor:
