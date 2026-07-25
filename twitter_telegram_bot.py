@@ -50,12 +50,23 @@ def is_valid_twitter(username: str) -> bool:
     return bool(re.match(r"^[a-z0-9_]{1,15}$", username))
 
 def extract_id(entry):
+    """Robust tweet ID extraction from various RSS formats"""
+    # 1. Try to find in link
     link = entry.get("link", "")
-    m = re.search(r"status/(\d+)", link)
+    m = re.search(r"status(?:es)?/(\d+)", link)
     if m: return m.group(1)
-    guid = entry.get("id", "")
-    m = re.search(r"(\d{15,})", guid)
-    return m.group(1) if m else None
+    
+    # 2. Try to find in guid/id
+    guid = entry.get("id", "") or entry.get("guid", "")
+    m = re.search(r"(\d{15,})", str(guid))
+    if m: return m.group(1)
+    
+    # 3. Try to find in description (some Nitter instances hide it there)
+    desc = entry.get("description", "")
+    m = re.search(r"status/(\d+)", desc)
+    if m: return m.group(1)
+    
+    return None
 
 def extract_image_url(entry):
     desc = entry.get('description', '')
@@ -160,37 +171,35 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Test command to fetch and send the LATEST tweet of any user immediately"""
     if not context.args:
-        await update.message.reply_text("❌ Usage: <code>/test username</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ Usage: /test username")
         return
 
     username = clean_username(context.args[0])
     chat_id = update.effective_chat.id
-    
-    # 1. Inform the user
-    wait_msg = await update.message.reply_text(f"🧪 Fetching latest tweet from <b>@{html.escape(username)}</b>...", parse_mode=ParseMode.HTML)
+    wait_msg = await update.message.reply_text(f"🧪 Testing @{username}...")
     
     try:
-        # 2. Fetch the feed (1 request only)
-        sem = asyncio.Semaphore(1)
-        entries = await fetch_feed(username, sem)
+        entries = await fetch_feed(username, asyncio.Semaphore(1))
+        if not entries:
+            await wait_msg.edit_text(f"❌ Could not fetch any tweets for @{username}.")
+            return
+
+        latest_entry = entries[0]
+        tid = extract_id(latest_entry)
         
-        if entries:
-            # 3. Get the very first (latest) tweet
-            latest_entry = entries[0]
-            
-            # 4. Force send it (bypassing duplicate check)
-            await process_single_tweet(chat_id, username, latest_entry, context.application.bot, force=True)
-            
-            # 5. Clean up
-            await wait_msg.delete()
-        else:
-            await wait_msg.edit_text(f"❌ Failed to fetch tweets for @{username}. The account might be private or all RSS sources are temporarily down.")
-            
+        # اگر آیدی پیدا نشد، به کاربر بگو تا بفهمیم مشکل از کجاست
+        if not tid:
+            await wait_msg.edit_text(f"❌ Found tweets, but could not extract Tweet ID for @{username}. Format changed?")
+            return
+
+        # ارسال توییت
+        await process_single_tweet(chat_id, username, latest_entry, context.application.bot, force=True)
+        await wait_msg.delete()
+        
     except Exception as e:
-        logger.error(f"Test command error: {e}")
-        await wait_msg.edit_text(f"❌ Error during test: {str(e)}")
+        logger.error(f"Test Error: {e}")
+        await wait_msg.edit_text(f"❌ Test failed: {str(e)}")
 
 # --- Background Engine ---
 async def process_single_tweet(chat_id, username, entry, bot, force=False):
