@@ -201,7 +201,7 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         db.mark_sent(chat_id, tid)
     except Exception as e:
         logger.error(f"Send Error: {e}")
-
+db.save_tweet_content(username, title, translation, img_url, x_link)
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     tracked = db.get_all_tracked()
     if not tracked: return
