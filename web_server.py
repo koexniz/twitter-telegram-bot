@@ -7,21 +7,27 @@ import os
 app = FastAPI()
 db = Database()
 
-# Setup templates directory properly
+# Base path for templates
 base_path = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(base_path, "templates"))
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     try:
-        tweets = db.get_latest_tweets(30)
+        # Fetch latest tweets from database
+        tweets_data = db.get_latest_tweets(30)
     except Exception as e:
-        print(f"Database Error: {e}")
-        tweets = []
+        print(f"Database Fetch Error: {e}")
+        tweets_data = []
     
-    return templates.TemplateResponse("index.html", {"request": request, "tweets": tweets})
+    # Modern Starlette style: pass request as a separate keyword argument
+    return templates.TemplateResponse(
+        request=request, 
+        name="index.html", 
+        context={"tweets": tweets_data}
+    )
 
-# Serve PWA essential files from root
+# PWA Support
 @app.get("/manifest.json")
 async def get_manifest():
     return FileResponse(os.path.join(base_path, "manifest.json"))
