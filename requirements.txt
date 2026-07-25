@@ -4,3 +4,6 @@ feedparser
 psycopg2-binary
 deep-translator
 python-dotenv
+fastapi
+uvicorn
+jinja2
