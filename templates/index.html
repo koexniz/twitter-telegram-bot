@@ -31,12 +31,12 @@
                 <div>
     <span class="font-bold">@{{ tweet.username }}</span>
     <span class="text-gray-500 text-xs ml-1">• 
-        {% if tweet.created_at and tweet.created_at.strftime %}
-            {{ tweet.created_at.strftime('%H:%M') }}
-        {% else %}
-            Now
-        {% endif %}
-    </span>
+    {% if tweet.created_at %}
+        {{ tweet.created_at.strftime('%H:%M') if tweet.created_at.strftime else tweet.created_at }}
+    {% else %}
+        Just now
+    {% endif %}
+</span>
 </div>
 
             <!-- Original English Text -->
