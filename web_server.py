@@ -10,7 +10,8 @@ app = FastAPI()
 db = Database()
 
 # Setup for PWA files
-templates = Jinja2Templates(directory="templates")
+base_path = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(base_path, "templates"))
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
