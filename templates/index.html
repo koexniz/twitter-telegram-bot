@@ -29,10 +29,15 @@
                     {{ tweet.username[0] }}
                 </div>
                 <div>
-                    <span class="font-bold">@{{ tweet.username }}</span>
-                    <span class="text-gray-500 text-xs ml-1">• {{ tweet.created_at.strftime('%H:%M') }}</span>
-                </div>
-            </div>
+    <span class="font-bold">@{{ tweet.username }}</span>
+    <span class="text-gray-500 text-xs ml-1">• 
+        {% if tweet.created_at and tweet.created_at.strftime %}
+            {{ tweet.created_at.strftime('%H:%M') }}
+        {% else %}
+            Now
+        {% endif %}
+    </span>
+</div>
 
             <!-- Original English Text -->
             <div class="text-[15px] leading-6 mb-3">
