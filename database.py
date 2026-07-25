@@ -76,3 +76,24 @@ class Database:
     def mark_sent(self, chat_id, tweet_id):
         with self.conn.cursor() as cursor:
             cursor.execute("INSERT INTO sent_ids (chat_id, tweet_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (str(chat_id), str(tweet_id)))
+    def save_tweet_content(self, username, title, translation, img_url, tweet_link):
+        with self.conn.cursor() as cursor:
+            # Create table if not exists for the APP
+            cursor.execute('''CREATE TABLE IF NOT EXISTS tweets_content (
+                                id SERIAL PRIMARY KEY,
+                                username TEXT,
+                                title TEXT,
+                                translation TEXT,
+                                img_url TEXT,
+                                tweet_link TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                              )''')
+            cursor.execute('''INSERT INTO tweets_content (username, title, translation, img_url, tweet_link) 
+                              VALUES (%s, %s, %s, %s, %s)''', 
+                           (username, title, translation, img_url, tweet_link))
+
+    def get_latest_tweets(self, limit=20):
+        with self.conn.cursor() as cursor:
+            cursor.execute("SELECT username, title, translation, img_url, tweet_link, created_at FROM tweets_content ORDER BY created_at DESC LIMIT %s", (limit,))
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
