@@ -173,23 +173,56 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         title = entry.get("title", "")
         translation = await translate_text(title)
         img_url = extract_image_url(entry)
-        
-        # Hidden link trick for images
-        hidden_img = f'<a href="{img_url}">&#8205;</a>' if img_url else ""
         x_link = convert_to_x_link(tid)
         
-        text = f"{hidden_img}👤 <b>@{html.escape(username)}</b>\n"
-        text += f"<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
+        safe_name = html.escape(username)
+        body = f"👤 <b>@{safe_name}</b>\n<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
         if translation:
-            text += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n"
-            text += f"<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
+            body += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+
+        # --- SMART MEDIA SENDING ---
+        if img_url:
+            # If text is short, send as caption
+            if len(body) < 1000:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=img_url,
+                    caption=body,
+                    reply_markup=kb,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                # If text is long, send photo first, then text
+                photo_msg = await bot.send_photo(chat_id=chat_id, photo=img_url)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=body,
+                    reply_markup=kb,
+                    parse_mode=ParseMode.HTML,
+                    reply_to_message_id=photo_msg.message_id
+                )
+        else:
+            # No image, send text only
+            await bot.send_message(
+                chat_id=chat_id,
+                text=body,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
+        logger.info(f"🚀 Sent @{username} (with Photo: {'Yes' if img_url else 'No'})")
+        
     except Exception as e:
-        logger.error(f"Send Error: {e}")
+        # Fallback: if photo fails, send text only
+        logger.error(f"Media Send Error: {e}")
+        try:
+            await bot.send_message(chat_id=chat_id, text=body, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except: pass
 
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
