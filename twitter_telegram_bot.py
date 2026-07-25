@@ -50,21 +50,26 @@ def is_valid_twitter(username: str) -> bool:
     return bool(re.match(r"^[a-z0-9_]{1,15}$", username))
 
 def extract_id(entry):
-    """Robust tweet ID extraction from various RSS formats"""
-    # 1. Try to find in link
-    link = entry.get("link", "")
-    m = re.search(r"status(?:es)?/(\d+)", link)
-    if m: return m.group(1)
+    """Extreme robust tweet ID extraction"""
+    # 1. Look for numbers in link or guid strings
+    for key in ["link", "id", "guid"]:
+        val = str(entry.get(key, ""))
+        # Search for status/123456...
+        m = re.search(r"status(?:es)?/(\d+)", val)
+        if m: return m.group(1)
+        # Search for any long digit sequence (usually 15+ digits)
+        m2 = re.search(r"(\d{15,})", val)
+        if m2: return m2.group(1)
+
+    # 2. Search inside description/content (some sources wrap ID in HTML)
+    desc = entry.get("description", "") or entry.get("summary", "")
+    m3 = re.search(r"status/(\d+)", desc)
+    if m3: return m3.group(1)
     
-    # 2. Try to find in guid/id
-    guid = entry.get("id", "") or entry.get("guid", "")
-    m = re.search(r"(\d{15,})", str(guid))
-    if m: return m.group(1)
-    
-    # 3. Try to find in description (some Nitter instances hide it there)
-    desc = entry.get("description", "")
-    m = re.search(r"status/(\d+)", desc)
-    if m: return m.group(1)
+    # 3. Last resort: check if there's any long number at all in the whole entry
+    entry_str = str(entry)
+    m4 = re.search(r"(\d{17,})", entry_str) # Modern IDs are 18-19 digits
+    if m4: return m4.group(1)
     
     return None
 
@@ -78,10 +83,12 @@ def extract_image_url(entry):
 
 def convert_to_x_link(link: str) -> str:
     if not link: return ""
-    link = link.split('#')[0]
-    m = re.search(r"status/(\d+)", link)
-    if m: return f"https://x.com/i/status/{m.group(1)}"
-    return link
+    # Extract ID and rebuild x.com link
+    m = re.search(r"status(?:es)?/(\d+)", link)
+    if m:
+        return f"https://x.com/i/status/{m.group(1)}"
+    # Fallback to simple replacement if regex fails
+    return link.replace("nitter.net", "x.com").replace("xcancel.com", "x.com")
 
 def persian_ratio(text: str) -> float:
     letters = re.findall(r"[A-Za-z\u0600-\u06FF]", text or "")
@@ -172,34 +179,33 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Usage: /test username")
+        await update.message.reply_text("Usage: /test username")
         return
 
     username = clean_username(context.args[0])
-    chat_id = update.effective_chat.id
     wait_msg = await update.message.reply_text(f"🧪 Testing @{username}...")
     
     try:
         entries = await fetch_feed(username, asyncio.Semaphore(1))
         if not entries:
-            await wait_msg.edit_text(f"❌ Could not fetch any tweets for @{username}.")
+            await wait_msg.edit_text(f"❌ No tweets found for @{username}.")
             return
 
-        latest_entry = entries[0]
-        tid = extract_id(latest_entry)
+        latest = entries[0]
+        tid = extract_id(latest)
         
-        # اگر آیدی پیدا نشد، به کاربر بگو تا بفهمیم مشکل از کجاست
         if not tid:
-            await wait_msg.edit_text(f"❌ Found tweets, but could not extract Tweet ID for @{username}. Format changed?")
+            # دیباگ حرفه‌ای: چاپ بخشی از فید در لاگ ریلیوی برای من
+            logger.warning(f"ID extraction failed. Entry keys: {latest.keys()}")
+            logger.warning(f"Entry link: {latest.get('link')}")
+            await wait_msg.edit_text(f"❌ Failed to extract ID for @{username}. Check Railway logs for details.")
             return
 
-        # ارسال توییت
-        await process_single_tweet(chat_id, username, latest_entry, context.application.bot, force=True)
+        await process_single_tweet(update.effective_chat.id, username, latest, context.application.bot, force=True)
         await wait_msg.delete()
         
     except Exception as e:
-        logger.error(f"Test Error: {e}")
-        await wait_msg.edit_text(f"❌ Test failed: {str(e)}")
+        await wait_msg.edit_text(f"❌ Error: {str(e)}")
 
 # --- Background Engine ---
 async def process_single_tweet(chat_id, username, entry, bot, force=False):
