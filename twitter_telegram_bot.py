@@ -80,19 +80,30 @@ def persian_ratio(text: str) -> float:
 async def translate_text(text: str) -> str:
     if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
         return ""
+    
     if REQUESTY_API_KEY:
         try:
-            base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
+            # Force /v1 if missing in URL
+            base = REQUESTY_BASE_URL.strip().rstrip('/')
+            if not base.endswith('/v1'):
+                base += '/v1'
+            
+            full_url = f"{base}/chat/completions"
             payload = {
                 "model": REQUESTY_MODEL,
-                "messages": [{"role": "user", "content": f"Translate this tweet to colloquial Persian. Keep crypto technical terms in English: {text[:1000]}"}],
+                "messages": [{"role": "user", "content": f"Translate to colloquial Persian (Tehran dialect). Keep crypto terms English: {text[:1000]}"}],
                 "temperature": 0.2
             }
             async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                resp = await client.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
+                resp = await client.post(full_url, headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
-        except: pass
+                else:
+                    logger.warning(f"AI Error: {resp.status_code} - {resp.text}")
+        except Exception as e:
+            logger.warning(f"AI Conn Error: {e}")
+
+    # Fallback to Google
     try:
         from deep_translator import GoogleTranslator
         return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1500])
