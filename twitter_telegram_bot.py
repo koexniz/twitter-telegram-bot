@@ -14,15 +14,15 @@ from database import Database
 
 load_dotenv()
 
-# --- Configuration ---
+# --- Config ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
-CONCURRENT_LIMIT = 5
+CONCURRENT_LIMIT = 3 # Low limit to prevent IP Ban
 
 # AI Config
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
 REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.17.wtf/v1").strip().rstrip('/')
-REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "gpt-5.5").strip()
+REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "posiden/deepseek-v4-flash").strip()
 TRANSLATE_FA = os.getenv("TRANSLATE_FA", "true").lower() in ("1", "true", "yes")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -30,11 +30,12 @@ logger = logging.getLogger(__name__)
 
 db = Database()
 
+# High Stability Sources
 RSS_SOURCES = [
-    "https://xcancel.com/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.perennialte.ch/{username}/rss",
+    "https://xcancel.com/{username}/rss",
     "https://nitter.net/{username}/rss",
+    "https://nitter.no-logs.com/{username}/rss",
     "https://rsshub.rssforever.com/twitter/user/{username}"
 ]
 
@@ -50,6 +51,7 @@ def is_valid_twitter(username: str) -> bool:
     return bool(re.match(r"^[a-z0-9_]{1,15}$", username))
 
 def extract_id(entry):
+    """Extra robust ID detection"""
     for key in ["id", "guid", "link"]:
         val = str(entry.get(key, ""))
         m = re.search(r"status(?:es)?/(\d+)", val)
@@ -59,100 +61,61 @@ def extract_id(entry):
     return None
 
 def extract_image_url(entry):
-    """Extract and convert Nitter image URLs to official Twitter image URLs"""
-    img_url = None
-    
-    # 1. Search in description for <img> tag
     desc = entry.get('description', '') or entry.get('summary', '')
     img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc, re.I)
     if img_match:
         img_url = img_match.group(1)
-    
-    # 2. If not found, check media content or enclosures
-    if not img_url:
-        if 'media_content' in entry:
-            img_url = entry.media_content[0].get('url')
-        elif 'enclosures' in entry and entry.enclosures:
-            for enc in entry.enclosures:
-                if 'image' in enc.get('type', ''):
-                    img_url = enc.get('href')
-                    break
-
-    if img_url:
-        # --- THE MAGIC TRICK: Convert Nitter URL to Twitter URL ---
-        # Example: nitter.net/pic/media%2FGSDFDS.jpg -> pbs.twimg.com/media/GSDFDS.jpg
-        if "/pic/media%2F" in img_url:
-            media_id = img_url.split("%2F")[-1].split('?')[0]
-            return f"https://pbs.twimg.com/media/{media_id}"
-        elif "/pic/media/" in img_url:
-            media_id = img_url.split("/")[-1].split('?')[0]
-            return f"https://pbs.twimg.com/media/{media_id}"
-        
-        # If it's already a twimg link or something else, return as is
-        if "twimg.com" in img_url or img_url.startswith("http"):
-            return img_url
-
+        if "twimg.com" in img_url or img_url.startswith("http"): return img_url
+    if 'media_content' in entry and entry.media_content: return entry.media_content[0]['url']
     return None
 
-def convert_to_x_link(tid: str) -> str:
-    return f"https://x.com/i/status/{tid}" if tid else ""
-
-def persian_ratio(text: str) -> float:
-    letters = re.findall(r"[A-Za-z\u0600-\u06FF]", text or "")
-    if not letters: return 0.0
-    return len(re.findall(r"[\u0600-\u06FF]", text or "")) / len(letters)
-
 async def translate_text(text: str) -> str:
-    if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5:
-        return ""
+    if not TRANSLATE_FA or not text or persian_ratio(text) > 0.5: return ""
     if REQUESTY_API_KEY:
         try:
             base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
-            payload = {"model": REQUESTY_MODEL, "messages": [{"role": "user", "content": f"Translate to colloquial Persian. Keep crypto terms English: {text[:1000]}"}], "temperature": 0.2}
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            payload = {"model": REQUESTY_MODEL, "messages": [{"role": "user", "content": f"Translate to colloquial Persian. Keep crypto terms English: {text[:800]}"}], "temperature": 0.2}
+            async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(base + "/chat/completions", headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
-                if resp.status_code == 200:
-                    return resp.json()["choices"][0]["message"]["content"].strip()
+                if resp.status_code == 200: return resp.json()["choices"][0]["message"]["content"].strip()
         except: pass
     try:
         from deep_translator import GoogleTranslator
-        return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1500])
+        return await asyncio.to_thread(GoogleTranslator(source='auto', target='fa').translate, text[:1200])
     except: return ""
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
-        await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.sleep(random.uniform(3, 6)) # High delay to avoid bans
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url)
-                    if resp.status_code != 200 or "uni-sonia" in str(resp.url) or "google.com" in str(resp.url): continue
+                    if resp.status_code != 200 or "google.com" in str(resp.url) or "uni-sonia" in str(resp.url):
+                        continue
                     feed = feedparser.parse(resp.text)
-                    real_entries = [e for e in feed.entries if extract_id(e)]
-                    if real_entries:
+                    valid_entries = [e for e in feed.entries if extract_id(e)]
+                    if valid_entries:
                         logger.info(f"✅ Success: @{username}")
-                        return real_entries
+                        return valid_entries
             except: continue
         return []
 
 # --- Handlers ---
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
     raw_input = " ".join(context.args)
     usernames = list(set([clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]))
     chat_id = str(update.effective_chat.id)
-    wait = await update.message.reply_text(f"⏳ Processing {len(usernames)} accounts...")
     added = []
     for u in usernames:
         if is_valid_twitter(u) and not db.is_subscribed(chat_id, u):
             db.add_subscription(chat_id, u, "")
             added.append(f"@{u}")
-    await wait.edit_text(f"🔹 Tracking: {', '.join(added) if added else 'None'}")
+    await update.message.reply_text(f"🔹 Started monitoring: {', '.join(added) if added else 'None'}")
 
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
     chat_id = str(update.effective_chat.id)
     removed = []
     for arg in context.args:
@@ -164,21 +127,18 @@ async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    tracked = db.get_all_tracked()
-    my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in tracked if db.is_subscribed(chat_id, u)]
-    msg = f"📋 <b>Your List ({len(my_users)}):</b>\n\n" + ("\n".join(my_users) if my_users else "Empty")
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
+    await update.message.reply_text(f"📋 <b>List ({len(my_users)}):</b>\n\n" + "\n".join(my_users), parse_mode=ParseMode.HTML)
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
-    username = clean_username(context.args[0])
+    username = clean_username(context.args[0]) if context.args else "ElonMusk"
     wait = await update.message.reply_text(f"🧪 Testing @{username}...")
     entries = await fetch_feed(username, asyncio.Semaphore(1))
     if entries:
         await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
         await wait.delete()
     else:
-        await wait.edit_text("❌ No valid tweets found.")
+        await wait.edit_text("❌ No valid tweets found. Source might be blocked.")
 
 # --- Engine ---
 async def process_single_tweet(chat_id, username, entry, bot, force=False):
@@ -188,38 +148,32 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         title = entry.get("title", "")
         translation = await translate_text(title)
         img_url = extract_image_url(entry)
-        x_link = convert_to_x_link(tid)
+        x_link = f"https://x.com/i/status/{tid}"
         
-        safe_name = html.escape(username)
-        body = f"👤 <b>@{safe_name}</b>\n<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
+        text = f"👤 <b>@{html.escape(username)}</b>\n<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
         if translation:
-            body += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
+            text += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-
+        
         if img_url:
             try:
-                # Try sending as photo (caption limited to 1024)
-                if len(body) < 1000:
-                    await bot.send_photo(chat_id=chat_id, photo=img_url, caption=body, reply_markup=kb, parse_mode=ParseMode.HTML)
-                else:
-                    # Send photo then reply with text
-                    photo_msg = await bot.send_photo(chat_id=chat_id, photo=img_url)
-                    await bot.send_message(chat_id=chat_id, text=body, reply_markup=kb, parse_mode=ParseMode.HTML, reply_to_message_id=photo_msg.message_id)
-                
-                db.save_tweet_content(username, title, translation, img_url, x_link)
-                db.mark_sent(chat_id, tid)
-                return # Exit success
-            except Exception as e:
-                logger.warning(f"Photo failed, falling back to text: {e}")
-
-        # Fallback for no image or failed photo sending
-        await bot.send_message(chat_id=chat_id, text=body, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                await bot.send_photo(chat_id=chat_id, photo=img_url, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except:
+                await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
-        
     except Exception as e:
-        logger.error(f"❌ Global Send Error: {e}")
+        logger.error(f"Error: {e}")
+
+async def check_updates(context: ContextTypes.DEFAULT_TYPE):
+    tracked = db.get_all_tracked()
+    sem = asyncio.Semaphore(CONCURRENT_LIMIT)
+    tasks = [process_user(u, li, sem, context.application.bot) for u, li in tracked]
+    await asyncio.gather(*tasks)
 
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
@@ -233,16 +187,8 @@ async def process_user(username, last_id, sem, bot):
         new_last_id = tid
     if new_last_id != last_id: db.update_last_id(username, new_last_id)
 
-async def check_updates(context: ContextTypes.DEFAULT_TYPE):
-    tracked = db.get_all_tracked()
-    if not tracked: return
-    sem = asyncio.Semaphore(CONCURRENT_LIMIT)
-    for u, li in tracked:
-        asyncio.create_task(process_user(u, li, sem, context.application.bot))
-
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Active.")))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("list", cmd_list))
