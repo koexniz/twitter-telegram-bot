@@ -151,21 +151,39 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         title = entry.get("title", "")
         translation = await translate_text(title)
         img_url = extract_image_url(entry)
-        x_link = convert_to_x_link(tid)
-        safe_name = html.escape(username)
-        text = f"👤 <b>@{safe_name}</b>\n<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
+        x_link = f"https://x.com/i/status/{tid}"
+        
+        # --- NEW LUXURY DESIGN ---
+        header = f"🔔 <b>NEW UPDATE | @{html.escape(username).upper()}</b>"
+        
+        # Main content with clean spacing
+        body = f"\n📝 <b>Original:</b>\n<blockquote expandable>{html.escape(title[:1900])}</blockquote>"
+        
+        text_msg = f"{header}\n{body}"
+        
         if translation:
-            text += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
+            # Better divider and Persian styling
+            divider = "\n" + "━" * 15 
+            text_msg += f"{divider}\n🇮🇷 <b>Persian Translation:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
+        
+        # Inline buttons with icons
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔗 Open in X", url=x_link),
+            InlineKeyboardButton("📱 Mobile App", url="https://resilient-respect-production.up.railway.app")
+        ]])
+
         if img_url:
             try:
-                await bot.send_photo(chat_id=chat_id, photo=img_url, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                # Add a blank character to the start to attach the image link
+                await bot.send_photo(chat_id=chat_id, photo=img_url, caption=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
             except:
-                await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
         else:
-            await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
+        logger.info(f"🚀 Sent @{username}")
     except Exception as e: logger.error(f"Error: {e}")
 
 async def process_user(username, last_id, sem, bot):
