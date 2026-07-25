@@ -36,6 +36,17 @@ class Database:
                               (chat_id TEXT, username TEXT, PRIMARY KEY(chat_id, username))''')
             cursor.execute('''CREATE TABLE IF NOT EXISTS sent_ids 
                               (chat_id TEXT, tweet_id TEXT, PRIMARY KEY(chat_id, tweet_id))''')
+            
+           
+            cursor.execute('''CREATE TABLE IF NOT EXISTS tweets_content (
+                                id SERIAL PRIMARY KEY,
+                                username TEXT,
+                                title TEXT,
+                                translation TEXT,
+                                img_url TEXT,
+                                tweet_link TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                              )''')
 
     def get_all_tracked(self):
         with self.conn.cursor() as cursor:
