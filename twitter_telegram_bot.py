@@ -19,10 +19,10 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 CONCURRENT_LIMIT = 5
 
-# AI Config (Optimized for Groq/OpenRouter)
+# AI Config (DeepSeek / Requesty / 17.wtf)
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
-REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip('/')
-REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "llama-3.3-70b-versatile").strip()
+REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.17.wtf/v1").strip().rstrip('/')
+REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "posiden/deepseek-v4-flash").strip()
 TRANSLATE_FA = os.getenv("TRANSLATE_FA", "true").lower() in ("1", "true", "yes")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -34,7 +34,8 @@ RSS_SOURCES = [
     "https://xcancel.com/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
     "https://nitter.perennialte.ch/{username}/rss",
-    "https://nitter.net/{username}/rss"
+    "https://nitter.net/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}"
 ]
 
 # --- Helpers ---
@@ -55,6 +56,9 @@ def extract_id(entry):
         if m: return m.group(1)
         m2 = re.search(r"(\d{17,})", val)
         if m2: return m2.group(1)
+    content = entry.get("description", "") or entry.get("summary", "")
+    m3 = re.search(r"status/(\d+)", content)
+    if m3: return m3.group(1)
     return None
 
 def extract_image_url(entry):
@@ -79,14 +83,13 @@ async def translate_text(text: str) -> str:
     if REQUESTY_API_KEY:
         try:
             base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
-            full_url = f"{base}/chat/completions"
             payload = {
                 "model": REQUESTY_MODEL,
-                "messages": [{"role": "user", "content": f"Translate this tweet to colloquial Persian (Tehran dialect). Keep crypto terms (Airdrop, Mainnet, etc.) in English: {text[:1000]}"}],
+                "messages": [{"role": "user", "content": f"Translate this tweet to colloquial Persian (informal). Keep crypto terms English: {text[:1000]}"}],
                 "temperature": 0.2
             }
             async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-                resp = await client.post(full_url, headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
+                resp = await client.post(base + "/chat/completions", headers={"Authorization": f"Bearer {REQUESTY_API_KEY}"}, json=payload)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"].strip()
         except: pass
@@ -97,17 +100,20 @@ async def translate_text(text: str) -> str:
 
 async def fetch_feed(username, semaphore):
     async with semaphore:
-        await asyncio.sleep(random.uniform(1, 3))
+        await asyncio.sleep(random.uniform(1.5, 3))
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
-                async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url)
-                    if resp.status_code != 200 or "google.com" in str(resp.url): continue
+                    if resp.status_code != 200 or "uni-sonia" in str(resp.url) or "google.com" in str(resp.url):
+                        continue
                     feed = feedparser.parse(resp.text)
                     real_entries = [e for e in feed.entries if extract_id(e)]
-                    if real_entries: return real_entries
+                    if real_entries:
+                        logger.info(f"✅ Success: @{username}")
+                        return real_entries
             except: continue
         return []
 
@@ -123,11 +129,12 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_valid_twitter(u) and not db.is_subscribed(chat_id, u):
             db.add_subscription(chat_id, u, "")
             added.append(f"@{u}")
-    await wait.edit_text(f"🔹 Added: {', '.join(added) if added else 'None'}")
+    await wait.edit_text(f"🔹 Tracking started for: {', '.join(added) if added else 'None'}")
 
 async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
-    usernames = [clean_username(arg) for arg in context.args]
+    raw_input = " ".join(context.args)
+    usernames = [clean_username(u) for u in re.split(r"[,\s]+", raw_input) if u]
     chat_id = str(update.effective_chat.id)
     removed = []
     for u in usernames:
@@ -139,7 +146,7 @@ async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     my_users = [f"• <code>{html.escape(u)}</code>" for u, _ in db.get_all_tracked() if db.is_subscribed(chat_id, u)]
-    msg = f"📋 Your Tracking List ({len(my_users)}):\n\n" + ("\n".join(my_users) if my_users else "Empty")
+    msg = f"📋 Tracking List ({len(my_users)}):\n\n" + ("\n".join(my_users) if my_users else "Empty")
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,9 +178,10 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
             text_msg += f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🇮🇷 <b>Translate:</b>\n<blockquote expandable><i>{html.escape(translation[:1900])}</i></blockquote>"
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
-        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+        await bot.send_message(chat_id=chat_id, text=text_msg, reply_markup=kb, parse_mode=ParseMode.HTML)
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
+        logger.info(f"🚀 Sent @{username}")
     except Exception as e:
         logger.error(f"❌ Send Error: {e}")
 
@@ -193,12 +201,12 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     tracked = db.get_all_tracked()
     if not tracked: return
     sem = asyncio.Semaphore(CONCURRENT_LIMIT)
-    for u, li in tracked:
-        asyncio.create_task(process_user(u, li, sem, context.application.bot))
+    tasks = [process_user(u, li, sem, context.application.bot) for u, li in tracked]
+    await asyncio.gather(*tasks)
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot Active.")))
+    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot is active.")))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("list", cmd_list))
