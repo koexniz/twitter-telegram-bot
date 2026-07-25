@@ -59,24 +59,39 @@ def extract_id(entry):
     return None
 
 def extract_image_url(entry):
-    """Aggressive image extraction from RSS description and media tags"""
-    # 1. Check description for <img> tag (common in Nitter)
+    """Extract and convert Nitter image URLs to official Twitter image URLs"""
+    img_url = None
+    
+    # 1. Search in description for <img> tag
     desc = entry.get('description', '') or entry.get('summary', '')
     img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc, re.I)
     if img_match:
         img_url = img_match.group(1)
-        if not img_url.startswith('/'): return img_url # Skip relative paths
     
-    # 2. Check media content
-    if 'media_content' in entry:
-        for media in entry.media_content:
-            if 'url' in media: return media['url']
-            
-    # 3. Check enclosures
-    if 'enclosures' in entry:
-        for enc in entry.enclosures:
-            if 'image' in enc.get('type', ''): return enc.get('href')
-            
+    # 2. If not found, check media content or enclosures
+    if not img_url:
+        if 'media_content' in entry:
+            img_url = entry.media_content[0].get('url')
+        elif 'enclosures' in entry and entry.enclosures:
+            for enc in entry.enclosures:
+                if 'image' in enc.get('type', ''):
+                    img_url = enc.get('href')
+                    break
+
+    if img_url:
+        # --- THE MAGIC TRICK: Convert Nitter URL to Twitter URL ---
+        # Example: nitter.net/pic/media%2FGSDFDS.jpg -> pbs.twimg.com/media/GSDFDS.jpg
+        if "/pic/media%2F" in img_url:
+            media_id = img_url.split("%2F")[-1].split('?')[0]
+            return f"https://pbs.twimg.com/media/{media_id}"
+        elif "/pic/media/" in img_url:
+            media_id = img_url.split("/")[-1].split('?')[0]
+            return f"https://pbs.twimg.com/media/{media_id}"
+        
+        # If it's already a twimg link or something else, return as is
+        if "twimg.com" in img_url or img_url.startswith("http"):
+            return img_url
+
     return None
 
 def convert_to_x_link(tid: str) -> str:
@@ -182,47 +197,29 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View on X", url=x_link)]])
 
-        # --- SMART MEDIA SENDING ---
         if img_url:
-            # If text is short, send as caption
-            if len(body) < 1000:
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=img_url,
-                    caption=body,
-                    reply_markup=kb,
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                # If text is long, send photo first, then text
-                photo_msg = await bot.send_photo(chat_id=chat_id, photo=img_url)
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=body,
-                    reply_markup=kb,
-                    parse_mode=ParseMode.HTML,
-                    reply_to_message_id=photo_msg.message_id
-                )
-        else:
-            # No image, send text only
-            await bot.send_message(
-                chat_id=chat_id,
-                text=body,
-                reply_markup=kb,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            try:
+                # Try sending as photo (caption limited to 1024)
+                if len(body) < 1000:
+                    await bot.send_photo(chat_id=chat_id, photo=img_url, caption=body, reply_markup=kb, parse_mode=ParseMode.HTML)
+                else:
+                    # Send photo then reply with text
+                    photo_msg = await bot.send_photo(chat_id=chat_id, photo=img_url)
+                    await bot.send_message(chat_id=chat_id, text=body, reply_markup=kb, parse_mode=ParseMode.HTML, reply_to_message_id=photo_msg.message_id)
+                
+                db.save_tweet_content(username, title, translation, img_url, x_link)
+                db.mark_sent(chat_id, tid)
+                return # Exit success
+            except Exception as e:
+                logger.warning(f"Photo failed, falling back to text: {e}")
 
+        # Fallback for no image or failed photo sending
+        await bot.send_message(chat_id=chat_id, text=body, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         db.save_tweet_content(username, title, translation, img_url, x_link)
         db.mark_sent(chat_id, tid)
-        logger.info(f"🚀 Sent @{username} (with Photo: {'Yes' if img_url else 'No'})")
         
     except Exception as e:
-        # Fallback: if photo fails, send text only
-        logger.error(f"Media Send Error: {e}")
-        try:
-            await bot.send_message(chat_id=chat_id, text=body, reply_markup=kb, parse_mode=ParseMode.HTML)
-        except: pass
+        logger.error(f"❌ Global Send Error: {e}")
 
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
