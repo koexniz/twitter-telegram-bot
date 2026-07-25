@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Twitter Monitor App</title>
+    <link rel="manifest" href="/manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #000; color: white; }
+        .tweet-card { border-bottom: 1px solid #2f3336; }
+        .persian-text { direction: rtl; font-family: 'Tahoma', sans-serif; }
+    </style>
+</head>
+<body class="max-w-lg mx-auto">
+
+    <!-- Header -->
+    <nav class="sticky top-0 z-50 bg-black/80 backdrop-blur-md border-b border-gray-800 p-4 flex justify-between items-center">
+        <h1 class="text-xl font-bold text-blue-400">Latest Tweets</h1>
+        <button onclick="window.location.reload()" class="text-sm bg-blue-600 px-3 py-1 rounded-full">Refresh</button>
+    </nav>
+
+    <!-- Feed -->
+    <div id="feed" class="pb-20">
+        {% for tweet in tweets %}
+        <div class="tweet-card p-4 hover:bg-gray-900 transition duration-200">
+            <div class="flex items-center space-x-2 mb-2">
+                <div class="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center font-bold text-white uppercase">
+                    {{ tweet.username[0] }}
+                </div>
+                <div>
+                    <span class="font-bold">@{{ tweet.username }}</span>
+                    <span class="text-gray-500 text-xs ml-1">• {{ tweet.created_at.strftime('%H:%M') }}</span>
+                </div>
+            </div>
+
+            <!-- Original English Text -->
+            <div class="text-[15px] leading-6 mb-3">
+                {{ tweet.title }}
+            </div>
+
+            <!-- Image (If exists) -->
+            {% if tweet.img_url %}
+            <div class="rounded-2xl overflow-hidden border border-gray-800 mb-3">
+                <img src="{{ tweet.img_url }}" class="w-full object-cover max-h-96" alt="tweet image">
+            </div>
+            {% endif %}
+
+            <!-- Persian Translation -->
+            {% if tweet.translation %}
+            <div class="bg-gray-900/50 p-3 rounded-xl border-l-4 border-blue-500 persian-text mb-3">
+                <p class="text-sm text-blue-400 mb-1 font-bold">🇮🇷 ترجمه فارسی:</p>
+                <p class="text-[14px] leading-7 text-gray-200">{{ tweet.translation }}</p>
+            </div>
+            {% endif %}
+
+            <!-- Action Buttons -->
+            <div class="flex justify-between items-center mt-2">
+                <a href="{{ tweet.tweet_link }}" target="_blank" class="text-blue-500 text-sm flex items-center">
+                    🔗 View on X
+                </a>
+                <button onclick="navigator.share({title: 'Share Tweet', url: '{{ tweet.tweet_link }}'})" class="text-gray-500">
+                    📤
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- PWA Service Worker -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js');
+            });
+        }
+    </script>
+</body>
+</html>
