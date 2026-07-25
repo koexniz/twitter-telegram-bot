@@ -160,15 +160,37 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
+    """Test command to fetch and send the LATEST tweet of any user immediately"""
+    if not context.args:
+        await update.message.reply_text("❌ Usage: <code>/test username</code>", parse_mode=ParseMode.HTML)
+        return
+
     username = clean_username(context.args[0])
-    wait = await update.message.reply_text(f"🧪 Live testing @{username}...")
-    entries = await fetch_feed(username, asyncio.Semaphore(1))
-    if entries:
-        await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
-        await wait.delete()
-    else:
-        await wait.edit_text("❌ Feed error for test.")
+    chat_id = update.effective_chat.id
+    
+    # 1. Inform the user
+    wait_msg = await update.message.reply_text(f"🧪 Fetching latest tweet from <b>@{html.escape(username)}</b>...", parse_mode=ParseMode.HTML)
+    
+    try:
+        # 2. Fetch the feed (1 request only)
+        sem = asyncio.Semaphore(1)
+        entries = await fetch_feed(username, sem)
+        
+        if entries:
+            # 3. Get the very first (latest) tweet
+            latest_entry = entries[0]
+            
+            # 4. Force send it (bypassing duplicate check)
+            await process_single_tweet(chat_id, username, latest_entry, context.application.bot, force=True)
+            
+            # 5. Clean up
+            await wait_msg.delete()
+        else:
+            await wait_msg.edit_text(f"❌ Failed to fetch tweets for @{username}. The account might be private or all RSS sources are temporarily down.")
+            
+    except Exception as e:
+        logger.error(f"Test command error: {e}")
+        await wait_msg.edit_text(f"❌ Error during test: {str(e)}")
 
 # --- Background Engine ---
 async def process_single_tweet(chat_id, username, entry, bot, force=False):
