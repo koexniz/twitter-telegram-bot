@@ -1,4 +1,5 @@
 import os, asyncio, logging, feedparser, re, httpx, html, random
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -14,8 +15,6 @@ load_dotenv()
 # --- Config ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
-CONCURRENT_LIMIT = 5
-
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "").strip()
 REQUESTY_BASE_URL = os.getenv("REQUESTY_BASE_URL", "https://api.17.wtf/v1").strip().rstrip('/')
 REQUESTY_MODEL = os.getenv("REQUESTY_MODEL", "posiden/deepseek-v4-flash").strip()
@@ -25,18 +24,6 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 db = Database()
-app = FastAPI()
-
-# Web Setup
-base_path = os.path.dirname(os.path.abspath(__file__))
-templates = Jinja2Templates(directory=os.path.join(base_path, "templates"))
-
-RSS_SOURCES = [
-    "https://xcancel.com/{username}/rss",
-    "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.perennialte.ch/{username}/rss",
-    "https://nitter.net/{username}/rss"
-]
 
 # --- Helpers ---
 def clean_username(raw: str) -> str:
@@ -70,8 +57,11 @@ def extract_image_url(entry):
     if 'media_content' in entry: return entry.media_content[0].get('url')
     return None
 
+def convert_to_x_link(tid: str) -> str:
+    return f"https://x.com/i/status/{tid}" if tid else ""
+
 async def translate_text(text: str) -> str:
-    if not TRANSLATE_FA or not text or len(re.findall(r"[\u0600-\u06FF]", text)) / len(re.findall(r"[A-Za-z\u0600-\u06FF]", text)) > 0.5 if re.findall(r"[A-Za-z\u0600-\u06FF]", text) else 0 > 0.5: return ""
+    if not TRANSLATE_FA or not text: return ""
     if REQUESTY_API_KEY:
         try:
             base = REQUESTY_BASE_URL if "/v1" in REQUESTY_BASE_URL else f"{REQUESTY_BASE_URL}/v1"
@@ -89,6 +79,7 @@ async def fetch_feed(username, semaphore):
     async with semaphore:
         await asyncio.sleep(random.uniform(2, 4))
         headers = {"User-Agent": "Mozilla/5.0"}
+        RSS_SOURCES = ["https://xcancel.com/{username}/rss", "https://nitter.privacydev.net/{username}/rss", "https://nitter.perennialte.ch/{username}/rss"]
         for src in RSS_SOURCES:
             url = src.format(username=username)
             try:
@@ -97,9 +88,7 @@ async def fetch_feed(username, semaphore):
                     if resp.status_code != 200 or "uni-sonia" in str(resp.url): continue
                     feed = feedparser.parse(resp.text)
                     valid = [e for e in feed.entries if extract_id(e)]
-                    if valid:
-                        logger.info(f"✅ Success: @{username}")
-                        return valid
+                    if valid: return valid
             except: continue
         return []
 
@@ -110,18 +99,20 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users:
         if is_valid_twitter(u) and not db.is_subscribed(update.effective_chat.id, u):
             db.add_subscription(update.effective_chat.id, u, "")
-    await update.message.reply_text(f"✅ Monitoring started for: {', '.join(users)}")
+    await update.message.reply_text(f"✅ Started: {', '.join(users)}")
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = clean_username(context.args[0]) if context.args else "ElonMusk"
-    wait = await update.message.reply_text(f"🧪 Testing @{username}...")
     entries = await fetch_feed(username, asyncio.Semaphore(1))
-    if entries:
-        await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
-        await wait.delete()
-    else: await wait.edit_text("❌ Feed Error.")
+    if entries: await process_single_tweet(update.effective_chat.id, username, entries[0], context.application.bot, force=True)
+    else: await update.message.reply_text("❌ Feed Error.")
 
-# --- Background Worker ---
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    my_users = [f"• @{x[0]}" for x in db.get_all_tracked() if db.is_subscribed(chat_id, x[0])]
+    await update.message.reply_text("📋 Your List:\n\n" + "\n".join(my_users))
+
+# --- Engine ---
 async def process_single_tweet(chat_id, username, entry, bot, force=False):
     tid = extract_id(entry)
     if not tid or (not force and db.is_duplicate(chat_id, tid)): return
@@ -138,13 +129,13 @@ async def process_single_tweet(chat_id, username, entry, bot, force=False):
         else: await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
         db.save_tweet_content(username, title, translation, img_url, f"https://x.com/i/status/{tid}")
         db.mark_sent(chat_id, tid)
-        logger.info(f"🚀 Sent @{username}")
-    except Exception as e: logger.error(f"Send Error: {e}")
+    except Exception as e: logger.error(f"Error: {e}")
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     tracked = db.get_all_tracked()
     sem = asyncio.Semaphore(CONCURRENT_LIMIT)
-    await asyncio.gather(*[process_user(u, li, sem, context.application.bot) for u, li in tracked])
+    for u, li in tracked:
+        await process_user(u, li, sem, context.application.bot)
 
 async def process_user(username, last_id, sem, bot):
     entries = await fetch_feed(username, sem)
@@ -157,11 +148,35 @@ async def process_user(username, last_id, sem, bot):
         new_last_id = tid
     if new_last_id != last_id: db.update_last_id(username, new_last_id)
 
-# --- Web App Routes ---
+# --- FastAPI + Bot Integration ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start Telegram Bot
+    bot_app = Application.builder().token(TOKEN).build()
+    bot_app.add_handler(CommandHandler("add", cmd_add))
+    bot_app.add_handler(CommandHandler("del", lambda u,c: [db.remove_subscription(u.effective_chat.id, clean_username(arg)) for arg in c.args]))
+    bot_app.add_handler(CommandHandler("list", cmd_list))
+    bot_app.add_handler(CommandHandler("test", cmd_test))
+    bot_app.job_queue.run_repeating(check_updates, interval=CHECK_INTERVAL, first=10)
+    
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling(drop_pending_updates=True)
+    logger.info("🚀 Bot and Web Server are running together!")
+    
+    yield
+    # Shutdown
+    await bot_app.updater.stop()
+    await bot_app.stop()
+    await bot_app.shutdown()
+
+app = FastAPI(lifespan=lifespan)
+templates = Jinja2Templates(directory=os.path.join(base_path, "templates"))
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     tweets = db.get_latest_tweets(30)
-    return templates.TemplateResponse(name="index.html", context={"request": request, "tweets": tweets})
+    return templates.TemplateResponse(request=request, name="index.html", context={"tweets": tweets})
 
 @app.get("/manifest.json")
 async def get_manifest(): return FileResponse(os.path.join(base_path, "manifest.json"))
@@ -169,25 +184,5 @@ async def get_manifest(): return FileResponse(os.path.join(base_path, "manifest.
 @app.get("/sw.js")
 async def get_sw(): return FileResponse(os.path.join(base_path, "sw.js"))
 
-# --- Main Runner ---
-async def run_bot():
-    bot_app = Application.builder().token(TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🤖 Bot Active.")))
-    bot_app.add_handler(CommandHandler("add", cmd_add))
-    bot_app.add_handler(CommandHandler("test", cmd_test))
-    bot_app.add_handler(CommandHandler("list", lambda u,c: u.message.reply_text("\n".join([f"• @{x[0]}" for x in db.get_all_tracked()]))))
-    
-    bot_app.job_queue.run_repeating(check_updates, interval=CHECK_INTERVAL, first=10)
-    
-    async with bot_app:
-        await bot_app.initialize()
-        await bot_app.start()
-        await bot_app.updater.start_polling(drop_pending_updates=True)
-        # Keep running until the web server stops
-        while True: await asyncio.sleep(1000)
-
 if __name__ == "__main__":
-    # Start bot in background thread, web server in main thread
-    from threading import Thread
-    Thread(target=lambda: asyncio.run(run_bot())).start()
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
